@@ -84,43 +84,109 @@ python train_resnet32.py \
 
 输出示例：`runs/resnet32_bs{128,256,512,1024}/{best.pt, metrics.csv, summary.json}`
 
+#### Baseline 训练结果（Batch Size 消融实验，L40S + BF16）
+
+在 L40S 上使用 BF16 + channels-last 训练 200 epochs 后的实际结果：
+
+| Batch Size | 最佳测试 Acc (%) | 最佳 Epoch | 训练总时长        | Params | FLOPs   | 备注          |
+|------------|------------------|------------|-------------------|--------|---------|---------------|
+| 128        | **92.83**        | 168        | 2373s (39.5min)   | 464154 | 68.86M  | **精度最高**  |
+| 256        | 92.37            | 168        | 1813s (30.2min)   | 464154 | 68.86M  | -             |
+| 512        | 91.60            | 180        | 1436s (23.9min)   | 464154 | 68.86M  | 速度较好      |
+| 1024       | 91.24            | 190        | 1432s (23.9min)   | 464154 | 68.86M  | 大 batch 最快 |
+
+**观察**：与主项目 H100 结果趋势一致，bs128 精度最高；L40S + BF16 下整体训练速度更快。推荐将 `runs/resnet32_bs128` 作为 L40S 实验的主要 baseline 参考。
+
+**为什么 L40S 实验推荐使用自己训练的 Baseline？**
+
+- **公平性**：L40S 上训练的 compressed 模型使用了 BF16 + `channels-last` + 特定 batch size 等优化，训练动态和收敛行为与 H100 存在差异。若直接复用主项目的 baseline 计算 accuracy_drop，会引入额外变量，导致结果不严谨。
+- **一致性**：权重继承（`--baseline-ckpt`）和最终指标对比，都应在相同硬件 + 相同训练设置下进行，才能保证可比性。
+- **历史教训**：之前因缺少当前环境的 baseline 做继承，导致短训练 proxy 精度仅 11.56%，搜索完全失效。
+- **课程规范**：人工智能实训课程论文通常要求 baseline 与实验模型在同一实验闭环下训练和评估，跨硬件/设置混用 baseline 容易被指出问题。
+
+因此，本目录所有 L40S 实验统一以 `resnet32_bs128`（或后续专门训的 `resnet32_baseline_l40s`）作为官方 baseline。
+
 ---
 
-### (3) GA/PSO 搜索通道配置（推荐优化路径）
+### (3) 直接使用主项目搜索结果进行完整训练（当前阶段跳过 L40S 搜索）
 
-推荐使用 L40S 优化配置（BF16 + channels-last + 权重继承 + 改进 fitness）：
+由于主项目（H100）已经通过多次 GA/PSO 搜索得到了可靠的最优配置，我们**不再使用** `scripts/run_l40s_search_fast.sh` 进行重复搜索。
 
+直接选取上一步（主项目）搜索出的最好配置，在 L40S 上进行完整 80-epoch 训练 + 对比。
+
+**推荐优先训练的三个配置**（来自主项目真实搜索结果）：
+- `8,16,32` （最激进压缩，多次被 GA 选中）
+- `8,20,32` （平衡型）
+- `12,24,32` （某次 PSO 快速评估中精度最高）
+
+#### 准备工作（必须先做）
 ```bash
-# 快速搜索（已有 baseline 时推荐）
-bash scripts/run_l40s_search_fast.sh
-
-# 或手动：
-python search_channels_ga_pso.py \
-  --algorithm both \
-  --search-epochs 1 \
-  --batch-size 1536 \
-  --num-workers 8 \
-  --max-train-samples 10000 \
-  --max-val-samples 5000 \
-  --baseline-ckpt runs/resnet32_baseline/best.pt \
-  --amp --amp-dtype bf16 --channels-last
+# 使用我们已有的最佳 baseline（bs128 精度最高 92.83%）
+mkdir -p runs/resnet32_baseline
+cp runs/resnet32_bs128/best.pt runs/resnet32_baseline/best.pt
 ```
 
-默认搜索空间（可通过 `--space` 自定义）：
-- `c1 ∈ {8,12,16}`、`c2 ∈ {16,20,24,28,32}`、`c3 ∈ {32,40,48,56,64}`
+#### 直接训练命令（L40S 完整优化参数）
 
-核心优化特性：
-- BF16 混合精度（更稳定）
-- `--baseline-ckpt` 权重继承（短训练也能得到可靠 proxy）
-- 改进 fitness（相对短 baseline 的精度约束 + penalty）
-- 支持 train/val split 避免 test 泄漏
+> **重要说明（Batch Size 选择）**：  
+> 因为我们已决定以 `resnet32_bs128`（使用 batch=128 + lr=0.1 训练，精度最高）作为本目录 L40S 实验的官方 baseline，为了保持训练动态和学习率调度的一致性，这里**统一使用 `--batch-size 128 --lr 0.1`**。  
+> 如果你想用更大 batch 加速（512/1024），建议同时切换使用对应的 `resnet32_bs512` 或 `resnet32_bs1024` 作为 baseline，并按 Linear Scaling Rule 调整 lr（例如 batch 1024 用 lr=0.8），否则 accuracy drop 的对比会不够公平。
 
-输出：`runs/channel_search_fast_*/{best_result.json, final_train_command.txt, ...}`
-
-搜索完成后直接查看推荐的最终训练命令：
 ```bash
-cat runs/channel_search_fast_*/final_train_command.txt
+# 1. 最激进配置 8-16-32（推荐第一个跑）
+python train_width_resnet32.py \
+  --channels 8,16,32 \
+  --run-name final_l40s_8-16-32 \
+  --epochs 80 --milestones 40,60 \
+  --batch-size 128 --lr 0.1 --num-workers 8 \
+  --amp --amp-dtype bf16 --channels-last \
+  --baseline-ckpt runs/resnet32_baseline/best.pt
 ```
+
+```bash
+# 2. 平衡配置 8-20-32
+python train_width_resnet32.py \
+  --channels 8,20,32 \
+  --run-name final_l40s_8-20-32 \
+  --epochs 80 --milestones 40,60 \
+  --batch-size 128 --lr 0.1 --num-workers 8 \
+  --amp --amp-dtype bf16 --channels-last \
+  --baseline-ckpt runs/resnet32_baseline/best.pt
+```
+
+```bash
+# 3. 相对保守、快速搜索精度最高 12-24-32
+python train_width_resnet32.py \
+  --channels 12,24,32 \
+  --run-name final_l40s_12-24-32 \
+  --epochs 80 --milestones 40,60 \
+  --batch-size 128 --lr 0.1 --num-workers 8 \
+  --amp --amp-dtype bf16 --channels-last \
+  --baseline-ckpt runs/resnet32_baseline/best.pt
+```
+
+#### 对比命令（训练完后执行）
+```bash
+# 对比 8-16-32
+python compare_results.py \
+  --baseline runs/resnet32_bs128/summary.json \
+  --compressed runs/final_l40s_8-16-32/summary.json \
+  --output runs/final_l40s_comparison_8-16-32.json
+
+# 对比 8-20-32
+python compare_results.py \
+  --baseline runs/resnet32_bs128/summary.json \
+  --compressed runs/final_l40s_8-20-32/summary.json \
+  --output runs/final_l40s_comparison_8-20-32.json
+
+# 对比 12-24-32
+python compare_results.py \
+  --baseline runs/resnet32_bs128/summary.json \
+  --compressed runs/final_l40s_12-24-32/summary.json \
+  --output runs/final_l40s_comparison_12-24-32.json
+```
+
+> **说明**：`run_l40s_search_fast.sh` 脚本在本阶段已暂停使用（搜索工作已在主项目完成）。如需以后在 L40S 上重新搜索，可手动启用并确保 baseline checkpoint 存在。
 
 ---
 
