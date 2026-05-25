@@ -1,3 +1,5 @@
+resnet32_*/runs/**/*.pt filter=lfs diff=lfs merge=lfs -text
+**/*.pt filter=lfs diff=lfs merge=lfs -text
 resnet32_l40s_optimized_ga_pso_search/runs/final_l40s_*/**/*.pt filter=lfs diff=lfs merge=lfs -text
 resnet32_ga_pso_search/runs/final_width_*/**/*.pt filter=lfs diff=lfs merge=lfs -text
 resnet32_ga_pso_search/runs/resnet32_bs*/**/*.pt filter=lfs diff=lfs merge=lfs -text
