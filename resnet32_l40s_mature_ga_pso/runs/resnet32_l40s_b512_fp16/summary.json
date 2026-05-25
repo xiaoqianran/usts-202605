@@ -1,0 +1,19 @@
+{
+  "run_name": "resnet32_l40s_b512_fp16",
+  "model": "ResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    16,
+    32,
+    64
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 200,
+  "best_acc": 91.70999992675782,
+  "best_epoch": 158,
+  "params": 464154,
+  "flops": 68862592,
+  "total_train_time_sec": 1404.9455621242523,
+  "checkpoint_best": "runs/resnet32_l40s_b512_fp16/best.pt",
+  "checkpoint_last": "runs/resnet32_l40s_b512_fp16/last.pt"
+}
