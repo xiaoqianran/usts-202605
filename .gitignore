@@ -150,7 +150,9 @@ ehthumbs.db
 Thumbs.db
 
 # ML / Deep Learning artifacts
-# IMPORTANT: Model weights and large binary checkpoints are NEVER committed
+# Most model weights are ignored, BUT for the completed experiments we
+# explicitly keep the best.pt / last.pt inside runs/ (see negation rules below)
+# because the user needs them archived for the final report.
 *.pt
 *.pth
 *.ckpt
@@ -170,10 +172,25 @@ Thumbs.db
 #   - metrics_*.csv / *.json, predictions, pcc curves, training history
 #   - plots and figures from experiments
 #   - split summaries, args, configs
-# Large RAW DATASETS and model weights stay out (see below).
+
+# User explicit request (2026): include the trained *.pt / best.pt / last.pt
+# from the experiment runs/ directories because they are needed for the final report.
+# These specific weights are now archived in the repo.
+# (New training runs in the future can be decided case-by-case.)
+
+# Large RAW DATASETS still stay out (see below).
 
 # NO blanket ignore for outputs/ or runs/ — we want the result files.
-# (Individual heavy binaries inside them are still blocked by *.pt rules above.)
+# (The *.pt rules below are overridden by the negation rules for report archival.)
+
+# === Explicitly include experiment model weights for report (user request) ===
+# These negation rules come AFTER the ignore rules so they take effect.
+!**/runs/**/best.pt
+!**/runs/**/last.pt
+!**/runs/**/best_model.pt
+!**/runs/**/final*.pt
+!**/runs/**/*best*.pt
+!**/runs/**/*last*.pt
 
 # Large / problematic datasets (do NOT commit full copies)
 # MSTAR: 5000+ SAR images, bad for git (many small files)
