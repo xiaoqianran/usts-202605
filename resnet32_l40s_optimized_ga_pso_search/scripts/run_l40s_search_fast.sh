@@ -3,7 +3,7 @@ set -euo pipefail
 python search_channels_ga_pso.py \
   --algorithm both \
   --search-epochs 1 \
-  --batch-size 2048 \
+  --batch-size 1536 \
   --num-workers 8 \
   --max-train-samples 10000 \
   --max-val-samples 5000 \

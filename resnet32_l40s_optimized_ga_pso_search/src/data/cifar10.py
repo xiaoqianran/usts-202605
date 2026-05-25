@@ -112,7 +112,7 @@ def get_cifar10_train_val_loaders(
 ):
     """Create train/val split loaders from CIFAR-10 *training* set (no test leakage).
 
-    This is used by the GA/PSO search (H100 fast path) so that the fitness signal
+    This is used by the GA/PSO search (L40S optimized path) so that the fitness signal
     during search comes from a validation split, not the official test set.
     """
     mean = (0.4914, 0.4822, 0.4465)

@@ -295,14 +295,20 @@ docs/experiment_plan.md       # 实验流程说明
 
 ---
 
-## H100 快速版建议
+## L40S Optimized 加速版建议
 
-本包已加入 H100 训练/搜索加速：BF16 AMP、channels_last、DataLoader persistent workers、较大 batch size、TF32、以及搜索阶段的 baseline 权重继承。
+本包已针对 L40S 进行了优化（同时兼容其他现代 GPU）：
+
+- 默认使用 BF16 混合精度（`--amp --amp-dtype bf16`）
+- 支持 `--channels-last`
+- 支持 TF32 + cudnn benchmark
+- 搜索阶段支持从 baseline checkpoint 继承权重（`--baseline-ckpt`）
+- 改进的 fitness 函数（相对短训练 baseline 的精度约束 + penalty）
 
 推荐先用已有 baseline checkpoint 搜索：
 
 ```bash
-bash scripts/run_h100_search_fast.sh
+bash scripts/run_l40s_search_fast.sh
 ```
 
 或者手动运行：
@@ -311,7 +317,7 @@ bash scripts/run_h100_search_fast.sh
 python search_channels_ga_pso.py \
   --algorithm both \
   --search-epochs 1 \
-  --batch-size 2048 \
+  --batch-size 1536 \
   --num-workers 8 \
   --max-train-samples 10000 \
   --max-val-samples 5000 \
@@ -328,5 +334,5 @@ cat runs/channel_search_fast_*/final_train_command.txt
 更多说明见：
 
 ```text
-docs/h100_fast_notes.md
+docs/l40s_optimized_notes.md
 ```
