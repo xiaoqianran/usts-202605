@@ -1,0 +1,4109 @@
+Directory structure:
+└── resnet32_ga_pso_search/
+    ├── README.md
+    ├── compare_results.py
+    ├── evaluate_resnet32.py
+    ├── evaluate_width_resnet32.py
+    ├── model_info.py
+    ├── requirements.txt
+    ├── search_channels_ga_pso.py
+    ├── train_resnet32.py
+    ├── train_width_resnet32.py
+    ├── data/
+    │   └── cifar-10-batches-py/
+    │       ├── readme.html
+    │       └── batches.meta
+    ├── docs/
+    │   ├── experiment_plan.md
+    │   ├── next_ga_pso_plan.md
+    │   └── optimization_model.md
+    ├── runs/
+    │   ├── final_comparison.json
+    │   ├── final_comparison_16-24-48.json
+    │   ├── final_comparison_8-16-32.json
+    │   ├── final_comparison_8-20-32.json
+    │   ├── channel_search_ga_pso/
+    │   │   ├── best_result.json
+    │   │   ├── evaluations.csv
+    │   │   ├── ga_best.json
+    │   │   ├── ga_history.csv
+    │   │   ├── pso_best.json
+    │   │   ├── pso_history.csv
+    │   │   └── search_config.json
+    │   ├── final_width_16-24-48/
+    │   │   ├── best.pt
+    │   │   ├── last.pt
+    │   │   ├── metrics.csv
+    │   │   └── summary.json
+    │   ├── final_width_8-16-32/
+    │   │   ├── best.pt
+    │   │   ├── last.pt
+    │   │   ├── metrics.csv
+    │   │   └── summary.json
+    │   ├── final_width_8-20-32/
+    │   │   ├── best.pt
+    │   │   ├── last.pt
+    │   │   ├── metrics.csv
+    │   │   └── summary.json
+    │   ├── resnet32_baseline/
+    │   │   ├── best.pt
+    │   │   ├── last.pt
+    │   │   ├── metrics.csv
+    │   │   └── summary.json
+    │   └── resnet32_quick/
+    │       ├── best.pt
+    │       ├── last.pt
+    │       ├── metrics.csv
+    │       └── summary.json
+    ├── scripts/
+    │   ├── run_full.sh
+    │   ├── run_quick.sh
+    │   ├── run_search_full.sh
+    │   ├── run_search_quick.sh
+    │   ├── run_search_quick_windows.ps1
+    │   ├── run_train_width_example.sh
+    │   └── run_windows.ps1
+    └── src/
+        ├── __init__.py
+        ├── data/
+        │   ├── __init__.py
+        │   └── cifar10.py
+        ├── models/
+        │   ├── __init__.py
+        │   ├── resnet32_cifar.py
+        │   └── resnet32_width.py
+        └── utils/
+            ├── __init__.py
+            ├── checkpoint.py
+            ├── metrics.py
+            └── seed.py
+
+================================================
+FILE: README.md
+================================================
+# ResNet32 CIFAR-10 + GA/PSO 通道配置搜索
+
+本项目用于《智能信息技术与应用》课程论文：
+
+1. 先训练标准 CIFAR-10 ResNet32 baseline。
+2. 在不改变 ResNet32 深度结构的前提下，搜索三个 stage 的通道配置 `[c1, c2, c3]`。
+3. 使用 GA（遗传算法）和 PSO（粒子群优化）求解通道配置优化问题。
+4. 完整比较压缩前后 Accuracy、Params、FLOPs、运行时间。
+
+> 注意：本阶段是 **stage-level 结构化通道宽度压缩**。它不是 BN-gamma 真通道索引剪枝。目的：先把“baseline → 智能优化搜索 → 最优压缩模型 → 指标对比”的闭环跑通。
+
+---
+
+## 1. 安装
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## 2. 查看标准 ResNet32 参数量/FLOPs
+
+```bash
+python model_info.py
+```
+
+查看某个压缩通道配置：
+
+```bash
+python model_info.py --channels 16,24,48
+```
+
+---
+
+## 3. 训练标准 ResNet32 baseline
+
+快速测试：
+
+```bash
+python train_resnet32.py --epochs 2 --batch-size 128 --lr 0.05 --milestones 1 --run-name resnet32_quick
+```
+
+正式训练：
+
+```bash
+python train_resnet32.py \
+  --run-name resnet32_baseline \
+  --epochs 200 \
+  --batch-size 128 \
+  --lr 0.1 \
+  --milestones 100,150 \
+  --amp
+```
+
+输出：
+
+```text
+runs/resnet32_baseline/best.pt
+runs/resnet32_baseline/last.pt
+runs/resnet32_baseline/metrics.csv
+runs/resnet32_baseline/summary.json
+```
+
+---
+
+## 4. GA/PSO 搜索通道配置
+
+默认搜索空间：
+
+```text
+c1 ∈ {8, 12, 16}
+c2 ∈ {16, 20, 24, 28, 32}
+c3 ∈ {32, 40, 48, 56, 64}
+```
+
+即仍然是 ResNet32：
+
+```text
+conv1 + stage1(5 blocks) + stage2(5 blocks) + stage3(5 blocks) + GAP + FC
+```
+
+只是 stage 通道数从原始 `[16, 32, 64]` 变成搜索得到的 `[c1, c2, c3]`。
+
+快速搜索：
+
+```bash
+python search_channels_ga_pso.py \
+  --algorithm both \
+  --search-epochs 1 \
+  --ga-population 4 \
+  --ga-generations 2 \
+  --pso-particles 4 \
+  --pso-iterations 2 \
+  --max-train-samples 1000 \
+  --max-test-samples 500
+```
+
+较正式搜索：
+
+```bash
+python search_channels_ga_pso.py \
+  --algorithm both \
+  --search-epochs 3 \
+  --ga-population 8 \
+  --ga-generations 5 \
+  --pso-particles 8 \
+  --pso-iterations 5 \
+  --max-train-samples 5000 \
+  --max-test-samples 2000 \
+  --amp
+```
+
+输出：
+
+```text
+runs/channel_search_ga_pso/search_config.json
+runs/channel_search_ga_pso/evaluations.csv
+runs/channel_search_ga_pso/ga_history.csv
+runs/channel_search_ga_pso/pso_history.csv
+runs/channel_search_ga_pso/ga_best.json
+runs/channel_search_ga_pso/pso_best.json
+runs/channel_search_ga_pso/best_result.json
+```
+
+---
+
+## 5. 训练搜索得到的最优压缩模型
+
+搜索完成后，终端会打印推荐命令。也可以手动运行：
+
+```bash
+python train_width_resnet32.py \
+  --channels 16,24,48 \
+  --run-name final_width_16-24-48 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --amp
+```
+
+输出：
+
+```text
+runs/final_width_16-24-48/best.pt
+runs/final_width_16-24-48/metrics.csv
+runs/final_width_16-24-48/summary.json
+```
+
+---
+
+## 6. 对比 baseline 和压缩模型
+
+```bash
+python compare_results.py \
+  --baseline runs/resnet32_baseline/summary.json \
+  --compressed runs/final_width_16-24-48/summary.json \
+  --output runs/final_comparison.json
+```
+
+输出字段包括：
+
+```text
+baseline_best_acc
+compressed_best_acc
+accuracy_drop
+params_compression_rate
+flops_reduction_rate
+baseline_train_time_sec
+compressed_train_time_sec
+```
+
+这几个指标可以直接放进课程论文结果表。
+
+---
+
+## 7. 适应度函数
+
+搜索阶段的适应度函数：
+
+```text
+Fitness(x) = Acc(x) - 100 * [ λp * Params(x)/Params0 + λf * FLOPs(x)/FLOPs0 ]
+```
+
+其中：
+
+```text
+x = [c1, c2, c3]
+Acc(x)：候选模型短训练后的验证准确率
+Params0 / FLOPs0：原始 ResNet32 的参数量和 FLOPs
+λp / λf：参数量和计算量惩罚权重
+```
+
+默认：
+
+```text
+λp = 0.15
+λf = 0.15
+```
+
+如果你更重视精度，减小 λ；如果你更重视压缩率，增大 λ。
+
+---
+
+## 8. 文件结构
+
+```text
+train_resnet32.py             # 标准 ResNet32 baseline 训练
+evaluate_resnet32.py          # 标准 ResNet32 checkpoint 评估
+model_info.py                 # 查看标准/压缩配置的 Params 与 FLOPs
+search_channels_ga_pso.py     # GA/PSO 搜索通道配置
+train_width_resnet32.py       # 训练搜索得到的压缩 ResNet32
+evaluate_width_resnet32.py    # 评估压缩 ResNet32 checkpoint
+compare_results.py            # baseline vs compressed 指标对比
+
+src/models/resnet32_cifar.py  # 标准 ResNet32
+src/models/resnet32_width.py  # 可变通道 ResNet32，深度仍为 32
+src/data/cifar10.py           # CIFAR-10 dataloader，支持子集搜索
+src/utils/                    # seed/checkpoint/metrics
+
+docs/optimization_model.md    # 优化问题建模说明
+docs/experiment_plan.md       # 实验流程说明
+```
+
+
+
+================================================
+FILE: compare_results.py
+================================================
+#!/usr/bin/env python3
+"""比较基线 ResNet32 与压缩后 WidthResNet32 的模型摘要。
+
+读取两份 summary.json（分别来自基线模型和压缩模型），计算精度差、
+参数压缩率、FLOPs 缩减率等指标，以 JSON 格式输出对比结果。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+
+def load_json(path: str | Path) -> dict:
+    """从指定路径加载并返回一个 JSON 对象。
+
+    Args:
+        path: JSON 文件的路径（字符串或 Path 对象）。
+
+    Returns:
+        解析后的字典。
+    """
+    with Path(path).open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def main() -> None:
+    """程序入口：解析命令行参数，加载两份摘要，计算对比指标并输出结果。"""
+
+    # ── 命令行参数解析 ──────────────────────────────────────────────
+    parser = argparse.ArgumentParser(
+        description="对比基准版 ResNet32 与压缩版 WidthResNet32 的统计结果"
+    )
+    parser.add_argument(
+        "--baseline",
+        required=True,
+        help="基准模型的 summary.json 文件，示例：runs/resnet32_baseline/summary.json",
+    )
+    parser.add_argument(
+        "--compressed",
+        required=True,
+        help="压缩模型的 summary.json 文件，示例：runs/final_width_16-24-48/summary.json",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="（可选）输出对比结果的 JSON 文件路径；不指定则仅打印到终端",
+    )
+    args = parser.parse_args()
+
+    # ── 加载基线与压缩模型的摘要 ────────────────────────────────────
+    base = load_json(args.baseline)   # 基线模型的 summary.json
+    comp = load_json(args.compressed) # 压缩模型的 summary.json
+
+    # ── 提取关键指标 ────────────────────────────────────────────────
+    #   best_acc   : 训练过程中的最高验证准确率（%）
+    #   params     : 模型可训练参数总量
+    #   flops      : 模型推理浮点运算量
+    base_acc = float(base.get("best_acc", 0.0))
+    comp_acc = float(comp.get("best_acc", 0.0))
+    base_params = int(base["params"])
+    comp_params = int(comp["params"])
+    base_flops = int(base["flops"])
+    comp_flops = int(comp["flops"])
+
+    # ── 构建对比结果字典 ────────────────────────────────────────────
+    result = {
+        # 模型标识
+        "baseline_run": base.get("run_name"),
+        "compressed_run": comp.get("run_name"),
+
+        # 各阶段通道配置（用于宽度剪枝的参考信息）
+        "baseline_channels": base.get("stage_channels"),
+        "compressed_channels": comp.get("stage_channels"),
+
+        # 准确率对比
+        "baseline_best_acc": base_acc,
+        "compressed_best_acc": comp_acc,
+        "accuracy_drop": base_acc - comp_acc,          # 精度下降量（正数表示有损失）
+
+        # 参数量对比
+        "baseline_params": base_params,
+        "compressed_params": comp_params,
+        "params_compression_rate": 1 - comp_params / base_params,  # 参数压缩率（0~1）
+
+        # 计算量对比
+        "baseline_flops": base_flops,
+        "compressed_flops": comp_flops,
+        "flops_reduction_rate": 1 - comp_flops / base_flops,      # FLOPs 缩减率（0~1）
+
+        # 训练耗时对比（秒）
+        "baseline_train_time_sec": base.get("total_train_time_sec"),
+        "compressed_train_time_sec": comp.get("total_train_time_sec"),
+    }
+
+    # ── 输出结果 ────────────────────────────────────────────────────
+    # 先打印到终端
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    # 如果指定了 --output，则写入文件
+    if args.output:
+        # 自动创建输出目录（如父目录不存在）
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        with Path(args.output).open("w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: evaluate_resnet32.py
+================================================
+#!/usr/bin/env python3
+"""评估标准 ResNet32 在 CIFAR-10 测试集上的性能。
+
+加载训练好的 ResNet32 checkpoint，在 CIFAR-10 测试集上计算损失与准确率，
+同时统计模型的参数量和推理 FLOPs，并将结果输出为 JSON。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+import torchvision
+import torchvision.transforms as transforms
+from tqdm import tqdm
+
+from src.models import resnet32                          # 自定义 ResNet32 模型
+from src.utils.checkpoint import load_checkpoint          # checkpoint 加载工具
+from src.utils.metrics import (
+    AverageMeter,       # 滑动平均计量器
+    accuracy,           # top-k 准确率计算
+    count_parameters,   # 统计可训练参数数量
+    human_number,       # 将大数值格式化为可读字符串（如 1.2M）
+    measure_flops,      # 测量模型 FLOPs
+)
+
+
+def get_test_loader(data_dir: str, batch_size: int, num_workers: int):
+    """构建 CIFAR-10 测试集的 DataLoader。
+
+    使用 CIFAR-10 官方推荐的均值和标准差进行归一化。
+
+    Args:
+        data_dir:    数据集存放根目录（不存在时自动下载）。
+        batch_size:  每个 mini-batch 的样本数。
+        num_workers: 数据加载的子进程数。
+
+    Returns:
+        配置好的 torch.utils.data.DataLoader。
+    """
+    # CIFAR-10 三个通道的均值和标准差（官方推荐）
+    # 用于 图像归一化（Normalization）：
+    mean = [0.4914, 0.4822, 0.4465]   # R, G, B 三个通道的均值
+    std  = [0.2023, 0.1994, 0.2010]   # R, G, B 三个通道的标准差
+
+    # 测试集只需 ToTensor + Normalize，不做数据增强
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
+
+    test_set = torchvision.datasets.CIFAR10(
+        root=data_dir, train=False, download=True, transform=transform
+    )
+
+    return torch.utils.data.DataLoader(
+        test_set,
+        batch_size=batch_size,
+        shuffle=False,                              # 测试集不需要打乱顺序
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),       # GPU 可用时启用锁页内存以加速传输
+    )
+
+
+@torch.no_grad()  # 评估阶段关闭梯度计算，节省显存与计算
+def evaluate(
+    model: nn.Module,
+    loader,
+    criterion,
+    device: torch.device,
+) -> tuple[float, float]:
+    """在测试集上评估模型的损失和 Top-1 准确率。
+
+    Args:
+        model:     待评估的模型。
+        loader:    测试集 DataLoader。
+        criterion: 损失函数（通常为 CrossEntropyLoss）。
+        device:    计算设备。
+
+    Returns:
+        (平均损失, Top-1 准确率 %) 的元组。
+    """
+    model.eval()                    # 切换到评估模式（关闭 Dropout / 更新 BN 统计量等）
+    losses = AverageMeter()         # 累计并平均损失
+    top1 = AverageMeter()           # 累计并平均 Top-1 准确率
+
+    for images, targets in tqdm(loader, desc="eval"):
+        images = images.to(device, non_blocking=True)       # non_blocking 与 pin_memory 配合加速
+        targets = targets.to(device, non_blocking=True)
+
+        outputs = model(images)                # 前向传播
+        loss = criterion(outputs, targets)     # 计算损失
+        acc1 = accuracy(outputs, targets, topk=(1,))[0]  # 计算 Top-1 准确率
+
+        losses.update(float(loss.item()), images.size(0))  # 按当前 batch 大小加权更新
+        top1.update(float(acc1.item()), images.size(0))
+
+    return losses.avg, top1.avg
+
+
+def main() -> None:
+    """程序入口：解析参数 → 加载模型 → 评估 → 统计参数/FLOPs → 输出结果。"""
+
+    # ── 命令行参数解析 ──────────────────────────────────────────────
+    parser = argparse.ArgumentParser(
+        description="Evaluate standard ResNet32 checkpoint on CIFAR-10"
+    )
+    parser.add_argument(
+        "--checkpoint", required=True,
+        help="模型 checkpoint 文件路径（.pth）",
+    )
+    parser.add_argument(
+        "--data-dir", default="data",
+        help="CIFAR-10 数据集存放目录",
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=256,
+        help="评估时的 batch size",
+    )
+    parser.add_argument(
+        "--num-workers", type=int, default=2,
+        help="数据加载的 worker 数量",
+    )
+    parser.add_argument(
+        "--device",
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="计算设备（cuda / cpu）",
+    )
+    parser.add_argument(
+        "--output", default=None,
+        help="（可选）评估结果的 JSON 输出路径",
+    )
+    args = parser.parse_args()
+
+    # ── 设备选择 ────────────────────────────────────────────────────
+    # 若用户指定 cuda 但环境不可用，自动回退到 cpu
+    device = torch.device(
+        args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu"
+    )
+
+    # ── 加载 checkpoint ─────────────────────────────────────────────
+    ckpt = load_checkpoint(args.checkpoint, map_location="cpu")  # 先加载到 CPU 再迁移到目标设备
+
+    # ── 构建模型并加载权重 ──────────────────────────────────────────
+    model = resnet32(num_classes=10)            # CIFAR-10 共 10 个类别
+    model.load_state_dict(ckpt["model"])        # 从 checkpoint 中恢复模型参数
+    model = model.to(device)                    # 迁移到目标设备
+
+    # ── 数据加载 ────────────────────────────────────────────────────
+    loader = get_test_loader(args.data_dir, args.batch_size, args.num_workers)
+
+    # ── 评估 ────────────────────────────────────────────────────────
+    criterion = nn.CrossEntropyLoss()
+    loss, acc = evaluate(model, loader, criterion, device)
+
+    # ── 统计模型复杂度 ──────────────────────────────────────────────
+    params = count_parameters(model)                            # 可训练参数总量
+    flops = measure_flops(model, input_size=(3, 32, 32), device=device)  # 单样本推理 FLOPs
+
+    # ── 汇总结果 ────────────────────────────────────────────────────
+    result = {
+        "checkpoint": str(args.checkpoint),
+        "model": "ResNet32",
+        "dataset": "CIFAR-10",
+        "test_loss": loss,
+        "test_acc": acc,            # 百分比形式，如 93.52
+        "params": params,
+        "flops": flops,
+    }
+
+    # 打印到终端（JSON + 一行摘要）
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(f"Params: {human_number(params)} | FLOPs: {human_number(flops)} | Acc: {acc:.2f}%")
+
+    # ── 写入文件（可选） ────────────────────────────────────────────
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)  # 自动创建输出目录
+        with Path(args.output).open("w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: evaluate_width_resnet32.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+from tqdm import tqdm
+
+from src.data import get_cifar10_test_loader
+from src.models import width_resnet32
+from src.utils.checkpoint import load_checkpoint
+from src.utils.metrics import AverageMeter, accuracy, count_parameters, human_number, measure_flops
+
+
+def parse_channels(s: str) -> list[int]:
+    values = [int(x.strip()) for x in s.replace("-", ",").split(",") if x.strip()]
+    if len(values) != 3:
+        raise argparse.ArgumentTypeError("channels must contain 3 integers, e.g. 16,24,48")
+    return values
+
+
+@torch.no_grad()
+def evaluate(model: nn.Module, loader, criterion, device: torch.device) -> tuple[float, float]:
+    model.eval()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    for images, targets in tqdm(loader, desc="eval"):
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        outputs = model(images)
+        loss = criterion(outputs, targets)
+        acc1 = accuracy(outputs, targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+    return losses.avg, top1.avg
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate variable-width ResNet32 checkpoint on CIFAR-10")
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--channels", type=parse_channels, default=None, help="optional; if omitted, read from checkpoint config")
+    parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--max-test-samples", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--output", default=None)
+    args = parser.parse_args()
+
+    device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
+    ckpt = load_checkpoint(args.checkpoint, map_location="cpu")
+    channels = args.channels or ckpt.get("config", {}).get("stage_channels")
+    if channels is None:
+        raise ValueError("channels not provided and not found in checkpoint config")
+
+    model = width_resnet32(stage_channels=channels, num_classes=10)
+    model.load_state_dict(ckpt["model"])
+    model = model.to(device)
+
+    loader = get_cifar10_test_loader(
+        data_dir=args.data_dir,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        max_test_samples=args.max_test_samples,
+        seed=args.seed,
+    )
+    criterion = nn.CrossEntropyLoss()
+    loss, acc = evaluate(model, loader, criterion, device)
+
+    params = count_parameters(model)
+    flops = measure_flops(model, input_size=(3, 32, 32), device=device)
+    result = {
+        "checkpoint": str(args.checkpoint),
+        "model": "WidthResNet32",
+        "dataset": "CIFAR-10",
+        "stage_channels": list(channels),
+        "test_loss": loss,
+        "test_acc": acc,
+        "params": params,
+        "flops": flops,
+    }
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(f"Params: {human_number(params)} | FLOPs: {human_number(flops)} | Acc: {acc:.2f}%")
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        with Path(args.output).open("w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: model_info.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+
+import torch
+
+from src.models import resnet32, width_resnet32
+from src.utils.metrics import count_parameters, human_number, measure_flops
+
+
+def parse_channels(s: str) -> list[int]:
+    values = [int(x.strip()) for x in s.replace("-", ",").split(",") if x.strip()]
+    if len(values) != 3:
+        raise argparse.ArgumentTypeError("channels must contain 3 integers, e.g. 16,24,48")
+    return values
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Show Params/FLOPs for standard or variable-width ResNet32")
+    parser.add_argument("--channels", type=parse_channels, default=[16, 32, 64], help="stage channels, e.g. 16,24,48")
+    args = parser.parse_args()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    is_standard = args.channels == [16, 32, 64]
+    model = resnet32(num_classes=10).to(device) if is_standard else width_resnet32(stage_channels=args.channels, num_classes=10).to(device)
+    params = count_parameters(model)
+    flops = measure_flops(model, input_size=(3, 32, 32), device=device)
+    info = {
+        "model": "ResNet32" if is_standard else "WidthResNet32",
+        "dataset": "CIFAR-10",
+        "stage_channels": args.channels,
+        "blocks_per_stage": 5,
+        "params": params,
+        "params_human": human_number(params),
+        "flops": flops,
+        "flops_human": human_number(flops),
+        "params_compression_rate_vs_16_32_64": None,
+        "flops_reduction_rate_vs_16_32_64": None,
+    }
+    if not is_standard:
+        base = resnet32(num_classes=10).to(device)
+        base_params = count_parameters(base)
+        base_flops = measure_flops(base, input_size=(3, 32, 32), device=device)
+        info["params_compression_rate_vs_16_32_64"] = 1 - params / base_params
+        info["flops_reduction_rate_vs_16_32_64"] = 1 - flops / base_flops
+    print(json.dumps(info, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: requirements.txt
+================================================
+torch
+torchvision
+tqdm
+numpy
+
+
+
+================================================
+FILE: search_channels_ga_pso.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import random
+import time
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Dict, Iterable, List, Sequence, Tuple
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+
+from src.data import get_cifar10_loaders
+from src.models import width_resnet32
+from src.utils.metrics import AverageMeter, accuracy, count_parameters, human_number, measure_flops
+from src.utils.seed import set_seed
+
+Candidate = Tuple[int, int, int]
+
+
+SEARCH_SPACE: list[list[int]] = [
+    [8, 12, 16],
+    [16, 20, 24, 28, 32],
+    [32, 40, 48, 56, 64],
+]
+BASELINE_CHANNELS: Candidate = (16, 32, 64)
+
+
+@dataclass
+class EvalResult:
+    channels: list[int]
+    fitness: float
+    test_acc: float
+    train_acc: float
+    test_loss: float
+    train_loss: float
+    params: int
+    flops: int
+    params_ratio: float
+    flops_ratio: float
+    params_compression_rate: float
+    flops_reduction_rate: float
+    eval_time_sec: float
+    epochs: int
+
+
+def candidate_to_key(channels: Sequence[int]) -> str:
+    return "-".join(map(str, channels))
+
+
+def parse_space(s: str | None) -> list[list[int]]:
+    if not s:
+        return SEARCH_SPACE
+    # Format: "8,12,16;16,20,24,28,32;32,40,48,56,64"
+    groups = []
+    for group in s.split(";"):
+        values = [int(x.strip()) for x in group.split(",") if x.strip()]
+        if not values:
+            raise argparse.ArgumentTypeError("empty group in search space")
+        groups.append(values)
+    if len(groups) != 3:
+        raise argparse.ArgumentTypeError("search space must contain 3 groups separated by ';'")
+    return groups
+
+
+def write_csv_header_if_needed(path: Path, fields: Iterable[str]) -> None:
+    if not path.exists():
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(fields))
+            writer.writeheader()
+
+
+def append_csv(path: Path, row: dict) -> None:
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        writer.writerow(row)
+
+
+def random_candidate(space: list[list[int]], rng: random.Random) -> Candidate:
+    return tuple(rng.choice(group) for group in space)  # type: ignore[return-value]
+
+
+def repair_candidate(channels: Sequence[int], space: list[list[int]]) -> Candidate:
+    fixed = []
+    for value, group in zip(channels, space):
+        # Snap to the closest allowed value in each group.
+        fixed.append(min(group, key=lambda x: abs(x - int(round(value)))))
+    return tuple(fixed)  # type: ignore[return-value]
+
+
+def decode_position(position: Sequence[float], space: list[list[int]]) -> Candidate:
+    decoded = []
+    for pos, group in zip(position, space):
+        idx = int(round(pos))
+        idx = max(0, min(len(group) - 1, idx))
+        decoded.append(group[idx])
+    return tuple(decoded)  # type: ignore[return-value]
+
+
+def conv_model_info(channels: Sequence[int], device: torch.device) -> tuple[int, int]:
+    model = width_resnet32(stage_channels=channels, num_classes=10).to(device)
+    params = count_parameters(model)
+    flops = measure_flops(model, input_size=(3, 32, 32), device=device)
+    del model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return params, flops
+
+
+def train_one_epoch(model, loader, criterion, optimizer, device, use_amp: bool) -> tuple[float, float]:
+    model.train()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
+    for images, targets in tqdm(loader, desc="candidate train", leave=False):
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            outputs = model(images)
+            loss = criterion(outputs, targets)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        acc1 = accuracy(outputs.detach(), targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+    return losses.avg, top1.avg
+
+
+@torch.no_grad()
+def evaluate(model, loader, criterion, device) -> tuple[float, float]:
+    model.eval()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    for images, targets in tqdm(loader, desc="candidate eval", leave=False):
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        outputs = model(images)
+        loss = criterion(outputs, targets)
+        acc1 = accuracy(outputs, targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+    return losses.avg, top1.avg
+
+
+class FitnessEvaluator:
+    def __init__(self, args, space: list[list[int]], out_dir: Path, device: torch.device) -> None:
+        self.args = args
+        self.space = space
+        self.out_dir = out_dir
+        self.device = device
+        self.use_amp = bool(args.amp and device.type == "cuda")
+        self.rng = random.Random(args.seed)
+        self.cache: Dict[str, EvalResult] = {}
+        self.eval_csv = out_dir / "evaluations.csv"
+
+        self.train_loader, self.test_loader = get_cifar10_loaders(
+            data_dir=args.data_dir,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            max_train_samples=args.max_train_samples,
+            max_test_samples=args.max_test_samples,
+            seed=args.seed,
+        )
+
+        self.baseline_params, self.baseline_flops = conv_model_info(BASELINE_CHANNELS, device)
+        fields = [
+            "channels", "fitness", "test_acc", "train_acc", "test_loss", "train_loss",
+            "params", "flops", "params_ratio", "flops_ratio",
+            "params_compression_rate", "flops_reduction_rate", "eval_time_sec", "epochs",
+        ]
+        write_csv_header_if_needed(self.eval_csv, fields)
+
+    def fitness_from_metrics(self, test_acc: float, params_ratio: float, flops_ratio: float) -> float:
+        # Accuracy is in percent. Ratios are in [0, 1].
+        # A lower Params/FLOPs ratio gets a smaller penalty.
+        return test_acc - 100.0 * (self.args.lambda_params * params_ratio + self.args.lambda_flops * flops_ratio)
+
+    def evaluate_candidate(self, channels: Sequence[int]) -> EvalResult:
+        channels = repair_candidate(channels, self.space)
+        key = candidate_to_key(channels)
+        if key in self.cache:
+            return self.cache[key]
+
+        start = time.time()
+        # Make candidate training deterministic enough for fair GA/PSO comparison.
+        local_seed = self.args.seed + sum((i + 1) * c for i, c in enumerate(channels))
+        set_seed(local_seed, deterministic=False)
+
+        model = width_resnet32(stage_channels=channels, num_classes=10).to(self.device)
+        params = count_parameters(model)
+        flops = measure_flops(model, input_size=(3, 32, 32), device=self.device)
+
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.SGD(
+            model.parameters(),
+            lr=self.args.lr,
+            momentum=self.args.momentum,
+            weight_decay=self.args.weight_decay,
+        )
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(self.args.search_epochs, 1))
+
+        train_loss = math.nan
+        train_acc = math.nan
+        for _ in range(self.args.search_epochs):
+            train_loss, train_acc = train_one_epoch(model, self.train_loader, criterion, optimizer, self.device, self.use_amp)
+            scheduler.step()
+        test_loss, test_acc = evaluate(model, self.test_loader, criterion, self.device)
+
+        params_ratio = params / self.baseline_params
+        flops_ratio = flops / self.baseline_flops
+        fitness = self.fitness_from_metrics(test_acc, params_ratio, flops_ratio)
+        result = EvalResult(
+            channels=list(channels),
+            fitness=float(fitness),
+            test_acc=float(test_acc),
+            train_acc=float(train_acc),
+            test_loss=float(test_loss),
+            train_loss=float(train_loss),
+            params=int(params),
+            flops=int(flops),
+            params_ratio=float(params_ratio),
+            flops_ratio=float(flops_ratio),
+            params_compression_rate=float(1.0 - params_ratio),
+            flops_reduction_rate=float(1.0 - flops_ratio),
+            eval_time_sec=float(time.time() - start),
+            epochs=int(self.args.search_epochs),
+        )
+        self.cache[key] = result
+        append_csv(self.eval_csv, {**asdict(result), "channels": key})
+
+        del model
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+        return result
+
+
+def tournament_select(population: list[Candidate], scores: dict[Candidate, float], rng: random.Random, k: int = 3) -> Candidate:
+    contenders = [rng.choice(population) for _ in range(k)]
+    return max(contenders, key=lambda c: scores[c])
+
+
+def run_ga(args, evaluator: FitnessEvaluator, space: list[list[int]], out_dir: Path) -> EvalResult:
+    rng = random.Random(args.seed + 101)
+    history_csv = out_dir / "ga_history.csv"
+    write_csv_header_if_needed(history_csv, ["generation", "best_channels", "best_fitness", "best_acc", "best_params_ratio", "best_flops_ratio"])
+
+    population: list[Candidate] = []
+    seen = set()
+    while len(population) < args.ga_population:
+        cand = random_candidate(space, rng)
+        if cand not in seen:
+            population.append(cand)
+            seen.add(cand)
+
+    global_best: EvalResult | None = None
+
+    for gen in range(args.ga_generations):
+        print(f"\n[GA] Generation {gen + 1}/{args.ga_generations}")
+        results = {cand: evaluator.evaluate_candidate(cand) for cand in population}
+        scores = {cand: res.fitness for cand, res in results.items()}
+        gen_best = max(results.values(), key=lambda r: r.fitness)
+        if global_best is None or gen_best.fitness > global_best.fitness:
+            global_best = gen_best
+
+        append_csv(history_csv, {
+            "generation": gen + 1,
+            "best_channels": candidate_to_key(gen_best.channels),
+            "best_fitness": f"{gen_best.fitness:.6f}",
+            "best_acc": f"{gen_best.test_acc:.4f}",
+            "best_params_ratio": f"{gen_best.params_ratio:.6f}",
+            "best_flops_ratio": f"{gen_best.flops_ratio:.6f}",
+        })
+        print(
+            f"[GA] best={candidate_to_key(gen_best.channels)} "
+            f"fitness={gen_best.fitness:.4f} acc={gen_best.test_acc:.2f}% "
+            f"params↓={gen_best.params_compression_rate:.2%} flops↓={gen_best.flops_reduction_rate:.2%}"
+        )
+
+        # Elitism + tournament + uniform crossover + mutation.
+        elite_count = max(1, args.ga_elites)
+        elites = sorted(population, key=lambda c: scores[c], reverse=True)[:elite_count]
+        next_population: list[Candidate] = list(elites)
+        while len(next_population) < args.ga_population:
+            p1 = tournament_select(population, scores, rng)
+            p2 = tournament_select(population, scores, rng)
+            if rng.random() < args.ga_crossover_rate:
+                child = tuple(p1[i] if rng.random() < 0.5 else p2[i] for i in range(3))
+            else:
+                child = p1
+            child_list = list(child)
+            for i, group in enumerate(space):
+                if rng.random() < args.ga_mutation_rate:
+                    child_list[i] = rng.choice(group)
+            child = repair_candidate(child_list, space)
+            next_population.append(child)
+        population = next_population
+
+    assert global_best is not None
+    with (out_dir / "ga_best.json").open("w", encoding="utf-8") as f:
+        json.dump(asdict(global_best), f, ensure_ascii=False, indent=2)
+    return global_best
+
+
+def run_pso(args, evaluator: FitnessEvaluator, space: list[list[int]], out_dir: Path) -> EvalResult:
+    rng = random.Random(args.seed + 202)
+    history_csv = out_dir / "pso_history.csv"
+    write_csv_header_if_needed(history_csv, ["iteration", "best_channels", "best_fitness", "best_acc", "best_params_ratio", "best_flops_ratio"])
+
+    dims = 3
+    upper = [len(group) - 1 for group in space]
+    positions = [[rng.uniform(0, upper[d]) for d in range(dims)] for _ in range(args.pso_particles)]
+    velocities = [[0.0 for _ in range(dims)] for _ in range(args.pso_particles)]
+    pbest_positions = [pos[:] for pos in positions]
+    pbest_scores = [-float("inf") for _ in range(args.pso_particles)]
+    pbest_results: list[EvalResult | None] = [None for _ in range(args.pso_particles)]
+    gbest_position: list[float] | None = None
+    gbest_result: EvalResult | None = None
+
+    for it in range(args.pso_iterations):
+        print(f"\n[PSO] Iteration {it + 1}/{args.pso_iterations}")
+        for i in range(args.pso_particles):
+            cand = decode_position(positions[i], space)
+            res = evaluator.evaluate_candidate(cand)
+            if res.fitness > pbest_scores[i]:
+                pbest_scores[i] = res.fitness
+                pbest_positions[i] = positions[i][:]
+                pbest_results[i] = res
+            if gbest_result is None or res.fitness > gbest_result.fitness:
+                gbest_result = res
+                gbest_position = positions[i][:]
+
+        assert gbest_result is not None and gbest_position is not None
+        append_csv(history_csv, {
+            "iteration": it + 1,
+            "best_channels": candidate_to_key(gbest_result.channels),
+            "best_fitness": f"{gbest_result.fitness:.6f}",
+            "best_acc": f"{gbest_result.test_acc:.4f}",
+            "best_params_ratio": f"{gbest_result.params_ratio:.6f}",
+            "best_flops_ratio": f"{gbest_result.flops_ratio:.6f}",
+        })
+        print(
+            f"[PSO] best={candidate_to_key(gbest_result.channels)} "
+            f"fitness={gbest_result.fitness:.4f} acc={gbest_result.test_acc:.2f}% "
+            f"params↓={gbest_result.params_compression_rate:.2%} flops↓={gbest_result.flops_reduction_rate:.2%}"
+        )
+
+        for i in range(args.pso_particles):
+            for d in range(dims):
+                r1 = rng.random()
+                r2 = rng.random()
+                velocities[i][d] = (
+                    args.pso_w * velocities[i][d]
+                    + args.pso_c1 * r1 * (pbest_positions[i][d] - positions[i][d])
+                    + args.pso_c2 * r2 * (gbest_position[d] - positions[i][d])
+                )
+                positions[i][d] += velocities[i][d]
+                positions[i][d] = max(0.0, min(float(upper[d]), positions[i][d]))
+
+    assert gbest_result is not None
+    with (out_dir / "pso_best.json").open("w", encoding="utf-8") as f:
+        json.dump(asdict(gbest_result), f, ensure_ascii=False, indent=2)
+    return gbest_result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="GA/PSO stage-channel search for CIFAR-10 ResNet32 compression")
+    parser.add_argument("--algorithm", choices=["ga", "pso", "both"], default="both")
+    parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--save-dir", default="runs")
+    parser.add_argument("--run-name", default="channel_search_ga_pso")
+    parser.add_argument("--space", default=None, help="e.g. '8,12,16;16,20,24,28,32;32,40,48,56,64'")
+    parser.add_argument("--search-epochs", type=int, default=3, help="epochs used to score each candidate")
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--lr", type=float, default=0.05)
+    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--max-train-samples", type=int, default=5000, help="0 means full train set")
+    parser.add_argument("--max-test-samples", type=int, default=2000, help="0 means full test set")
+    parser.add_argument("--lambda-params", type=float, default=0.15)
+    parser.add_argument("--lambda-flops", type=float, default=0.15)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--amp", action="store_true")
+
+    parser.add_argument("--ga-population", type=int, default=8)
+    parser.add_argument("--ga-generations", type=int, default=5)
+    parser.add_argument("--ga-elites", type=int, default=2)
+    parser.add_argument("--ga-crossover-rate", type=float, default=0.8)
+    parser.add_argument("--ga-mutation-rate", type=float, default=0.25)
+
+    parser.add_argument("--pso-particles", type=int, default=8)
+    parser.add_argument("--pso-iterations", type=int, default=5)
+    parser.add_argument("--pso-w", type=float, default=0.6)
+    parser.add_argument("--pso-c1", type=float, default=1.4)
+    parser.add_argument("--pso-c2", type=float, default=1.4)
+    args = parser.parse_args()
+
+    set_seed(args.seed, deterministic=False)
+    space = parse_space(args.space)
+    device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
+
+    out_dir = Path(args.save_dir) / args.run_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    config = vars(args).copy()
+    config["search_space"] = space
+    config["baseline_channels"] = list(BASELINE_CHANNELS)
+    config["model_family"] = "CIFAR-10 ResNet32, stage-level width search"
+    with (out_dir / "search_config.json").open("w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+    evaluator = FitnessEvaluator(args, space, out_dir, device)
+    print("Baseline channels:", candidate_to_key(BASELINE_CHANNELS))
+    print(f"Baseline params: {evaluator.baseline_params} ({human_number(evaluator.baseline_params)})")
+    print(f"Baseline FLOPs : {evaluator.baseline_flops} ({human_number(evaluator.baseline_flops)})")
+    print("Search space:", space)
+    print("Fitness = Acc - 100 * (lambda_params * ParamsRatio + lambda_flops * FLOPsRatio)")
+
+    total_start = time.time()
+    best_results = {}
+    if args.algorithm in {"ga", "both"}:
+        ga_best = run_ga(args, evaluator, space, out_dir)
+        best_results["ga"] = asdict(ga_best)
+    if args.algorithm in {"pso", "both"}:
+        pso_best = run_pso(args, evaluator, space, out_dir)
+        best_results["pso"] = asdict(pso_best)
+
+    final_best_name, final_best = max(best_results.items(), key=lambda item: item[1]["fitness"])
+    summary = {
+        "algorithm": args.algorithm,
+        "best_algorithm": final_best_name,
+        "best": final_best,
+        "baseline": {
+            "channels": list(BASELINE_CHANNELS),
+            "params": evaluator.baseline_params,
+            "flops": evaluator.baseline_flops,
+        },
+        "num_unique_evaluations": len(evaluator.cache),
+        "total_search_time_sec": time.time() - total_start,
+    }
+    with (out_dir / "best_result.json").open("w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    print("\nSearch done.")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print("\nNext step: train the best channel configuration fully, for example:")
+    best_channels = final_best["channels"]
+    print(
+        "python train_width_resnet32.py "
+        f"--channels {','.join(map(str, best_channels))} "
+        f"--run-name final_width_{candidate_to_key(best_channels)} "
+        "--epochs 80 --milestones 40,60 --amp"
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: train_resnet32.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import time
+from pathlib import Path
+from typing import Iterable
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+from tqdm import tqdm
+
+from src.models import resnet32
+from src.utils.checkpoint import load_checkpoint, save_checkpoint
+from src.utils.metrics import AverageMeter, accuracy, count_parameters, human_number, measure_flops
+from src.utils.seed import set_seed
+
+
+def parse_milestones(s: str) -> list[int]:
+    if not s:
+        return []
+    return [int(x.strip()) for x in s.split(",") if x.strip()]
+
+
+def get_loaders(
+    data_dir: str,
+    batch_size: int,
+    num_workers: int,
+) -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
+    mean = (0.4914, 0.4822, 0.4465)
+    std = (0.2023, 0.1994, 0.2010)
+
+    train_transform = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
+
+    train_set = torchvision.datasets.CIFAR10(
+        root=data_dir,
+        train=True,
+        download=True,
+        transform=train_transform,
+    )
+    test_set = torchvision.datasets.CIFAR10(
+        root=data_dir,
+        train=False,
+        download=True,
+        transform=test_transform,
+    )
+
+    train_loader = torch.utils.data.DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    return train_loader, test_loader
+
+
+def train_one_epoch(
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: nn.Module,
+    optimizer: optim.Optimizer,
+    device: torch.device,
+    use_amp: bool,
+) -> tuple[float, float]:
+    model.train()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
+    pbar = tqdm(loader, desc="train", leave=False)
+    for images, targets in pbar:
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            outputs = model(images)
+            loss = criterion(outputs, targets)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        acc1 = accuracy(outputs.detach(), targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+        pbar.set_postfix(loss=f"{losses.avg:.4f}", acc=f"{top1.avg:.2f}")
+
+    return losses.avg, top1.avg
+
+
+@torch.no_grad()
+def evaluate(
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+) -> tuple[float, float]:
+    model.eval()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+
+    pbar = tqdm(loader, desc="eval", leave=False)
+    for images, targets in pbar:
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        outputs = model(images)
+        loss = criterion(outputs, targets)
+        acc1 = accuracy(outputs, targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+        pbar.set_postfix(loss=f"{losses.avg:.4f}", acc=f"{top1.avg:.2f}")
+
+    return losses.avg, top1.avg
+
+
+def write_csv_header_if_needed(path: Path, fields: Iterable[str]) -> None:
+    if not path.exists():
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(fields))
+            writer.writeheader()
+
+
+def append_csv(path: Path, row: dict) -> None:
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        writer.writerow(row)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train standard ResNet32 on CIFAR-10")
+    parser.add_argument("--data-dir", default="data", help="CIFAR-10 data directory")
+    parser.add_argument("--save-dir", default="runs", help="output directory")
+    parser.add_argument("--run-name", default="resnet32_baseline", help="run directory name")
+    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--lr", type=float, default=0.1)
+    parser.add_argument("--milestones", type=parse_milestones, default=[100, 150], help="e.g. 100,150")
+    parser.add_argument("--gamma", type=float, default=0.1)
+    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--amp", action="store_true", help="use mixed precision on CUDA")
+    parser.add_argument("--resume", default=None, help="resume from checkpoint")
+    args = parser.parse_args()
+
+    set_seed(args.seed, deterministic=False)
+    device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
+    use_amp = bool(args.amp and device.type == "cuda")
+
+    out_dir = Path(args.save_dir) / args.run_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    metrics_csv = out_dir / "metrics.csv"
+
+    config = vars(args).copy()
+    config["model"] = "ResNet32"
+    config["dataset"] = "CIFAR-10"
+    config["stage_channels"] = [16, 32, 64]
+    config["blocks_per_stage"] = 5
+
+    train_loader, test_loader = get_loaders(args.data_dir, args.batch_size, args.num_workers)
+    model = resnet32(num_classes=10).to(device)
+
+    params = count_parameters(model)
+    flops = measure_flops(model, input_size=(3, 32, 32), device=device)
+    print("Model: standard CIFAR-10 ResNet32")
+    print("Stage channels: 16-32-64")
+    print("Blocks per stage: 5")
+    print(f"Params: {params} ({human_number(params)})")
+    print(f"FLOPs : {flops} ({human_number(flops)})")
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(
+        model.parameters(),
+        lr=args.lr,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay,
+    )
+    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.milestones, gamma=args.gamma)
+
+    start_epoch = 0
+    best_acc = 0.0
+    best_epoch = -1
+
+    if args.resume:
+        ckpt = load_checkpoint(args.resume, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        start_epoch = int(ckpt.get("epoch", 0)) + 1
+        best_acc = float(ckpt.get("best_acc", 0.0))
+        best_epoch = int(ckpt.get("best_epoch", -1))
+        print(f"Resumed from {args.resume} at epoch {start_epoch}")
+
+    fields = [
+        "epoch",
+        "lr",
+        "train_loss",
+        "train_acc",
+        "test_loss",
+        "test_acc",
+        "epoch_time_sec",
+    ]
+    write_csv_header_if_needed(metrics_csv, fields)
+
+    total_start = time.time()
+    for epoch in range(start_epoch, args.epochs):
+        epoch_start = time.time()
+        lr = optimizer.param_groups[0]["lr"]
+        print(f"\nEpoch {epoch + 1}/{args.epochs} | lr={lr:.6f}")
+
+        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device, use_amp)
+        test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+        scheduler.step()
+        epoch_time = time.time() - epoch_start
+
+        row = {
+            "epoch": epoch + 1,
+            "lr": lr,
+            "train_loss": f"{train_loss:.6f}",
+            "train_acc": f"{train_acc:.4f}",
+            "test_loss": f"{test_loss:.6f}",
+            "test_acc": f"{test_acc:.4f}",
+            "epoch_time_sec": f"{epoch_time:.2f}",
+        }
+        append_csv(metrics_csv, row)
+        print(
+            f"train_loss={train_loss:.4f} train_acc={train_acc:.2f} | "
+            f"test_loss={test_loss:.4f} test_acc={test_acc:.2f} | time={epoch_time:.1f}s"
+        )
+
+        is_best = test_acc > best_acc
+        if is_best:
+            best_acc = test_acc
+            best_epoch = epoch + 1
+
+        ckpt_payload = {
+            "epoch": epoch,
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "best_acc": best_acc,
+            "best_epoch": best_epoch,
+            "config": config,
+            "params": params,
+            "flops": flops,
+        }
+        save_checkpoint(out_dir / "last.pt", **ckpt_payload)
+        if is_best:
+            save_checkpoint(out_dir / "best.pt", **ckpt_payload)
+            print(f"Saved new best checkpoint: acc={best_acc:.2f}%")
+
+    total_time = time.time() - total_start
+    summary = {
+        "run_name": args.run_name,
+        "model": "ResNet32",
+        "dataset": "CIFAR-10",
+        "stage_channels": [16, 32, 64],
+        "blocks_per_stage": 5,
+        "epochs": args.epochs,
+        "best_acc": best_acc,
+        "best_epoch": best_epoch,
+        "params": params,
+        "flops": flops,
+        "total_train_time_sec": total_time,
+        "checkpoint_best": str(out_dir / "best.pt"),
+        "checkpoint_last": str(out_dir / "last.pt"),
+    }
+    with (out_dir / "summary.json").open("w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    print("\nDone.")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: train_width_resnet32.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import time
+from pathlib import Path
+from typing import Iterable
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+
+from src.data import get_cifar10_loaders
+from src.models import width_resnet32
+from src.utils.checkpoint import load_checkpoint, save_checkpoint
+from src.utils.metrics import AverageMeter, accuracy, count_parameters, human_number, measure_flops
+from src.utils.seed import set_seed
+
+
+def parse_channels(s: str) -> list[int]:
+    values = [int(x.strip()) for x in s.replace("-", ",").split(",") if x.strip()]
+    if len(values) != 3:
+        raise argparse.ArgumentTypeError("channels must contain 3 integers, e.g. 16,24,48 or 16-24-48")
+    return values
+
+
+def parse_milestones(s: str) -> list[int]:
+    if not s:
+        return []
+    return [int(x.strip()) for x in s.split(",") if x.strip()]
+
+
+def write_csv_header_if_needed(path: Path, fields: Iterable[str]) -> None:
+    if not path.exists():
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(fields))
+            writer.writeheader()
+
+
+def append_csv(path: Path, row: dict) -> None:
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        writer.writerow(row)
+
+
+def train_one_epoch(model, loader, criterion, optimizer, device, use_amp: bool) -> tuple[float, float]:
+    model.train()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
+    pbar = tqdm(loader, desc="train", leave=False)
+    for images, targets in pbar:
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            outputs = model(images)
+            loss = criterion(outputs, targets)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        acc1 = accuracy(outputs.detach(), targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+        pbar.set_postfix(loss=f"{losses.avg:.4f}", acc=f"{top1.avg:.2f}")
+
+    return losses.avg, top1.avg
+
+
+@torch.no_grad()
+def evaluate(model, loader, criterion, device) -> tuple[float, float]:
+    model.eval()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    pbar = tqdm(loader, desc="eval", leave=False)
+    for images, targets in pbar:
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        outputs = model(images)
+        loss = criterion(outputs, targets)
+        acc1 = accuracy(outputs, targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+        pbar.set_postfix(loss=f"{losses.avg:.4f}", acc=f"{top1.avg:.2f}")
+    return losses.avg, top1.avg
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train a variable-width ResNet32 candidate on CIFAR-10")
+    parser.add_argument("--channels", type=parse_channels, default=[16, 24, 48], help="stage channels, e.g. 16,24,48")
+    parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--save-dir", default="runs")
+    parser.add_argument("--run-name", default=None)
+    parser.add_argument("--epochs", type=int, default=80)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--lr", type=float, default=0.1)
+    parser.add_argument("--milestones", type=parse_milestones, default=[40, 60], help="e.g. 40,60")
+    parser.add_argument("--gamma", type=float, default=0.1)
+    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--max-train-samples", type=int, default=0, help="optional subset for quick experiments")
+    parser.add_argument("--max-test-samples", type=int, default=0, help="optional subset for quick experiments")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--amp", action="store_true")
+    parser.add_argument("--resume", default=None)
+    args = parser.parse_args()
+
+    set_seed(args.seed, deterministic=False)
+    device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
+    use_amp = bool(args.amp and device.type == "cuda")
+
+    channel_tag = "-".join(map(str, args.channels))
+    run_name = args.run_name or f"width_resnet32_{channel_tag}"
+    out_dir = Path(args.save_dir) / run_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    metrics_csv = out_dir / "metrics.csv"
+
+    train_loader, test_loader = get_cifar10_loaders(
+        data_dir=args.data_dir,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        max_train_samples=args.max_train_samples,
+        max_test_samples=args.max_test_samples,
+        seed=args.seed,
+    )
+
+    model = width_resnet32(stage_channels=args.channels, num_classes=10).to(device)
+    params = count_parameters(model)
+    flops = measure_flops(model, input_size=(3, 32, 32), device=device)
+
+    print("Model: variable-width CIFAR-10 ResNet32")
+    print(f"Stage channels: {channel_tag}")
+    print("Blocks per stage: 5")
+    print(f"Params: {params} ({human_number(params)})")
+    print(f"FLOPs : {flops} ({human_number(flops)})")
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.milestones, gamma=args.gamma)
+
+    start_epoch = 0
+    best_acc = 0.0
+    best_epoch = -1
+
+    config = vars(args).copy()
+    config["model"] = "WidthResNet32"
+    config["dataset"] = "CIFAR-10"
+    config["stage_channels"] = args.channels
+    config["blocks_per_stage"] = 5
+
+    if args.resume:
+        ckpt = load_checkpoint(args.resume, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        start_epoch = int(ckpt.get("epoch", 0)) + 1
+        best_acc = float(ckpt.get("best_acc", 0.0))
+        best_epoch = int(ckpt.get("best_epoch", -1))
+        print(f"Resumed from {args.resume} at epoch {start_epoch}")
+
+    fields = ["epoch", "lr", "train_loss", "train_acc", "test_loss", "test_acc", "epoch_time_sec"]
+    write_csv_header_if_needed(metrics_csv, fields)
+
+    total_start = time.time()
+    for epoch in range(start_epoch, args.epochs):
+        epoch_start = time.time()
+        lr = optimizer.param_groups[0]["lr"]
+        print(f"\nEpoch {epoch + 1}/{args.epochs} | lr={lr:.6f}")
+
+        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device, use_amp)
+        test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+        scheduler.step()
+        epoch_time = time.time() - epoch_start
+
+        row = {
+            "epoch": epoch + 1,
+            "lr": lr,
+            "train_loss": f"{train_loss:.6f}",
+            "train_acc": f"{train_acc:.4f}",
+            "test_loss": f"{test_loss:.6f}",
+            "test_acc": f"{test_acc:.4f}",
+            "epoch_time_sec": f"{epoch_time:.2f}",
+        }
+        append_csv(metrics_csv, row)
+        print(
+            f"train_loss={train_loss:.4f} train_acc={train_acc:.2f} | "
+            f"test_loss={test_loss:.4f} test_acc={test_acc:.2f} | time={epoch_time:.1f}s"
+        )
+
+        is_best = test_acc > best_acc
+        if is_best:
+            best_acc = test_acc
+            best_epoch = epoch + 1
+
+        payload = {
+            "epoch": epoch,
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "best_acc": best_acc,
+            "best_epoch": best_epoch,
+            "config": config,
+            "params": params,
+            "flops": flops,
+        }
+        save_checkpoint(out_dir / "last.pt", **payload)
+        if is_best:
+            save_checkpoint(out_dir / "best.pt", **payload)
+            print(f"Saved new best checkpoint: acc={best_acc:.2f}%")
+
+    total_time = time.time() - total_start
+    summary = {
+        "run_name": run_name,
+        "model": "WidthResNet32",
+        "dataset": "CIFAR-10",
+        "stage_channels": args.channels,
+        "blocks_per_stage": 5,
+        "epochs": args.epochs,
+        "best_acc": best_acc,
+        "best_epoch": best_epoch,
+        "params": params,
+        "flops": flops,
+        "total_train_time_sec": total_time,
+        "checkpoint_best": str(out_dir / "best.pt"),
+        "checkpoint_last": str(out_dir / "last.pt"),
+    }
+    with (out_dir / "summary.json").open("w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    print("\nDone.")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: data/cifar-10-batches-py/readme.html
+================================================
+<meta HTTP-EQUIV="REFRESH" content="0; url=http://www.cs.toronto.edu/~kriz/cifar.html">
+
+
+
+================================================
+FILE: data/cifar-10-batches-py/batches.meta
+================================================
+[Binary file]
+
+
+================================================
+FILE: docs/experiment_plan.md
+================================================
+[Binary file]
+
+
+================================================
+FILE: docs/next_ga_pso_plan.md
+================================================
+[Binary file]
+
+
+================================================
+FILE: docs/optimization_model.md
+================================================
+# GA/PSO 通道配置搜索：优化问题建模
+
+## 1. 问题描述
+
+在标准 CIFAR-10 ResNet32 中，原始通道配置为：
+
+```text
+x0 = [16, 32, 64]
+```
+
+本文保持 ResNet32 的深度结构不变，即每个 stage 仍然包含 5 个 residual blocks，只搜索三个 stage 的通道数：
+
+```text
+x = [c1, c2, c3]
+```
+
+因此，该方法属于结构化通道宽度压缩，而不是改变网络深度或替换网络结构。
+
+---
+
+## 2. 变量空间
+
+默认搜索空间：
+
+```text
+c1 ∈ {8, 12, 16}
+c2 ∈ {16, 20, 24, 28, 32}
+c3 ∈ {32, 40, 48, 56, 64}
+```
+
+其中：
+
+```text
+c1：stage1 的通道数
+c2：stage2 的通道数
+c3：stage3 的通道数
+```
+
+原始 ResNet32 是搜索空间中的一个特殊解：
+
+```text
+x0 = [16, 32, 64]
+```
+
+---
+
+## 3. 优化目标
+
+目标是在尽可能降低参数量和 FLOPs 的同时保持分类精度。
+
+单目标适应度函数定义为：
+
+```text
+Fitness(x) = Acc(x) - 100 * [ λp * Params(x)/Params0 + λf * FLOPs(x)/FLOPs0 ]
+```
+
+其中：
+
+```text
+Acc(x)：候选通道配置 x 对应模型的验证准确率
+Params(x)：候选模型参数量
+FLOPs(x)：候选模型单张图片前向计算量
+Params0：原始 ResNet32 参数量
+FLOPs0：原始 ResNet32 FLOPs
+λp：参数量惩罚系数
+λf：FLOPs 惩罚系数
+```
+
+适应度越大，说明该配置在精度和压缩率之间的综合表现越好。
+
+---
+
+## 4. 判定条件
+
+一个候选解是否更优，主要看：
+
+```text
+1. Fitness 是否更高
+2. Accuracy 是否明显下降
+3. Params compression rate 是否更高
+4. FLOPs reduction rate 是否更高
+5. 搜索和训练时间是否可接受
+```
+
+实际报告中应优先选择：
+
+```text
+精度下降较小，但参数量和 FLOPs 有明显下降的通道配置。
+```
+
+---
+
+## 5. GA 选择理由
+
+遗传算法适合离散组合优化。本任务中的通道配置 `[c1, c2, c3]` 来自有限候选集合，天然适合编码为染色体。GA 通过选择、交叉、变异在离散空间中搜索较优配置。
+
+---
+
+## 6. PSO 选择理由
+
+粒子群优化具有实现简单、收敛速度较快的特点。虽然原始 PSO 面向连续空间，但可将粒子位置映射到离散通道索引，从而用于本任务的通道配置搜索。与 GA 对比，可以观察两种计算智能优化算法在搜索效率和结果质量上的差异。
+
+
+
+================================================
+FILE: runs/final_comparison.json
+================================================
+{
+  "baseline_run": "resnet32_baseline",
+  "compressed_run": "final_width_16-24-48",
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ],
+  "compressed_channels": [
+    16,
+    24,
+    48
+  ],
+  "baseline_best_acc": 92.84,
+  "compressed_best_acc": 90.96,
+  "accuracy_drop": 1.8800000000000097,
+  "baseline_params": 464154,
+  "compressed_params": 272858,
+  "params_compression_rate": 0.41213907453129783,
+  "baseline_flops": 68862592,
+  "compressed_flops": 49471968,
+  "flops_reduction_rate": 0.28158428889810017,
+  "baseline_train_time_sec": 1080.4495613574982,
+  "compressed_train_time_sec": 501.70339035987854
+}
+
+
+================================================
+FILE: runs/final_comparison_16-24-48.json
+================================================
+{
+  "baseline_run": "resnet32_baseline",
+  "compressed_run": "final_width_16-24-48",
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ],
+  "compressed_channels": [
+    16,
+    24,
+    48
+  ],
+  "baseline_best_acc": 93.0,
+  "compressed_best_acc": 90.96,
+  "accuracy_drop": 2.0400000000000063,
+  "baseline_params": 464154,
+  "compressed_params": 272858,
+  "params_compression_rate": 0.41213907453129783,
+  "baseline_flops": 68862592,
+  "compressed_flops": 49471968,
+  "flops_reduction_rate": 0.28158428889810017,
+  "baseline_train_time_sec": 1218.934302330017,
+  "compressed_train_time_sec": 501.70339035987854
+}
+
+
+================================================
+FILE: runs/final_comparison_8-16-32.json
+================================================
+{
+  "baseline_run": "resnet32_baseline",
+  "compressed_run": "final_width_8-16-32",
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ],
+  "compressed_channels": [
+    8,
+    16,
+    32
+  ],
+  "baseline_best_acc": 93.0,
+  "compressed_best_acc": 88.93,
+  "accuracy_drop": 4.069999999999993,
+  "baseline_params": 464154,
+  "compressed_params": 116882,
+  "params_compression_rate": 0.7481827152195177,
+  "baseline_flops": 68862592,
+  "compressed_flops": 17326400,
+  "flops_reduction_rate": 0.7483916957409911,
+  "baseline_train_time_sec": 1218.934302330017,
+  "compressed_train_time_sec": 550.7849042415619
+}
+
+
+================================================
+FILE: runs/final_comparison_8-20-32.json
+================================================
+{
+  "baseline_run": "resnet32_baseline",
+  "compressed_run": "final_width_8-20-32",
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ],
+  "compressed_channels": [
+    8,
+    20,
+    32
+  ],
+  "baseline_best_acc": 93.0,
+  "compressed_best_acc": 89.32,
+  "accuracy_drop": 3.680000000000007,
+  "baseline_params": 464154,
+  "compressed_params": 130066,
+  "params_compression_rate": 0.7197783494271298,
+  "baseline_flops": 68862592,
+  "compressed_flops": 20459840,
+  "flops_reduction_rate": 0.7028889066505077,
+  "baseline_train_time_sec": 1218.934302330017,
+  "compressed_train_time_sec": 493.74221301078796
+}
+
+
+================================================
+FILE: runs/channel_search_ga_pso/best_result.json
+================================================
+{
+  "algorithm": "both",
+  "best_algorithm": "ga",
+  "best": {
+    "channels": [
+      8,
+      20,
+      32
+    ],
+    "fitness": 26.790008841164564,
+    "test_acc": 35.45,
+    "train_acc": 32.08,
+    "test_loss": 1.71929518699646,
+    "train_loss": 1.7822734130859375,
+    "params": 130066,
+    "flops": 20459840,
+    "params_ratio": 0.2802216505728702,
+    "flops_ratio": 0.29711109334949226,
+    "params_compression_rate": 0.7197783494271298,
+    "flops_reduction_rate": 0.7028889066505077,
+    "eval_time_sec": 2.233189582824707,
+    "epochs": 3
+  },
+  "baseline": {
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "params": 464154,
+    "flops": 68862592
+  },
+  "num_unique_evaluations": 28,
+  "total_search_time_sec": 83.02476954460144
+}
+
+
+================================================
+FILE: runs/channel_search_ga_pso/evaluations.csv
+================================================
+channels,fitness,test_acc,train_acc,test_loss,train_loss,params,flops,params_ratio,flops_ratio,params_compression_rate,flops_reduction_rate,eval_time_sec,epochs
+8-16-32,25.698616164407632,33.25,31.08,1.7988448095321656,1.796671923828125,116882,17326400,0.2518172847804823,0.251608304259009,0.7481827152195177,0.7483916957409911,9.625478744506836,3
+8-20-40,21.457426672743395,32.35,32.44,1.7930652332305907,1.7483172485351564,178402,23538064,0.38435950137238933,0.34181205377805124,0.6156404986276107,0.6581879462219488,3.839902877807617,3
+8-28-56,17.771405284982347,37.55,32.92,1.6700177545547485,1.7607886108398438,342050,40053296,0.7369321389021747,0.581640842099002,0.2630678610978253,0.418359157900998,2.772707223892212,3
+8-32-40,20.621816640162194,36.25,33.9,1.697863127708435,1.7476289001464844,234370,36974992,0.5049401707192009,0.536938719936653,0.49505982928079906,0.463061280063347,2.9611830711364746,3
+8-32-48,13.269668369098742,31.65,30.04,1.7498608331680299,1.7969222778320313,293938,40772064,0.6332768865505845,0.5920785555094993,0.36672311344941555,0.4079214444905007,2.521120548248291,3
+12-16-48,19.260676633865273,33.65,33.58,1.7686879577636718,1.7294826538085937,231318,31740384,0.49836476686616943,0.4609234575428122,0.5016352331338305,0.5390765424571877,6.277784585952759,3
+16-28-56,12.320198959792577,36.75,32.84,1.6919290075302125,1.7414581481933593,361738,58485296,0.7793490953433558,0.8493043073371389,0.22065090465664416,0.1506956926628611,5.841916799545288,3
+16-32-32,14.917792042977997,32.95,35.8,1.6914260768890381,1.6885138793945313,205146,52347200,0.44197830892333145,0.760168888211469,0.5580216910766685,0.239831111788531,2.522488594055176,3
+12-28-40,17.420786165549544,33.2,33.58,1.7246940450668335,1.7666801666259766,221526,39573904,0.4772683204281338,0.5746792685352303,0.5227316795718662,0.4253207314647697,2.5713868141174316,3
+8-24-32,22.603097944659527,32.6,28.84,1.7108680047988891,1.8186960327148438,145842,24256832,0.31421036983414985,0.35224976718854845,0.6857896301658502,0.6477502328114515,2.837608814239502,3
+8-20-48,22.645245024960122,36.25,33.54,1.7089212646484375,1.775897705078125,237106,27279840,0.5108347660474756,0.39614889895518307,0.4891652339525244,0.6038511010448169,2.196453809738159,3
+8-20-32,28.040008841164564,36.7,33.48,1.6986692199707032,1.745678955078125,130066,20459840,0.2802216505728702,0.29711109334949226,0.7197783494271298,0.7028889066505077,2.1923604011535645,3
+8-24-56,15.376586378029533,33.55,30.14,1.7494509210586549,1.8504403442382813,322818,35537456,0.695497615015706,0.5160632931156585,0.30450238498429405,0.48393670688434154,2.1588029861450195,3
+8-16-64,14.593979445590573,33.9,32.8,1.7215631170272827,1.7537857543945312,371282,33546880,0.7999112363568988,0.4871568006037298,0.20008876364310124,0.5128431993962702,2.1983859539031982,3
+16-20-32,20.78953664336634,34.05,30.66,1.7665306072235107,1.78936318359375,149178,38744384,0.32139763957651984,0.562633250865724,0.6786023604234801,0.437366749134276,2.1927545070648193,3
+8-32-32,16.74436543186354,30.1,31.1,1.7662997579574584,1.763952294921875,185170,33841472,0.3989408687633846,0.4914347691123796,0.6010591312366154,0.5085652308876204,1.8236429691314697,3
+16-16-32,19.923511030305182,32.05,33.14,1.7814514932632446,1.770381622314453,135706,35537216,0.29237279006536626,0.5160598079142882,0.7076272099346337,0.4839401920857118,2.1757891178131104,3
+12-24-32,23.407910751105725,35.35,31.62,1.701683448791504,1.7326933837890626,154102,31961408,0.3320061876015288,0.4641330956580897,0.6679938123984712,0.5358669043419103,2.204313039779663,3
+12-28-48,16.231960102246152,34.75,32.52,1.7029806995391845,1.7564716552734374,280806,43352544,0.6049845525407516,0.6295514406428384,0.39501544745924844,0.3704485593571616,2.2290306091308594,3
+8-16-40,22.57935620374652,32.35,32.5,1.7451540975570679,1.765294677734375,164930,20386192,0.3553346518612357,0.2960416012223298,0.6446653481387643,0.7039583987776702,2.1645119190216064,3
+16-20-48,12.5947728271619,30.8,32.88,1.7956191501617431,1.7811974731445313,256218,45564384,0.5520107550511253,0.6616710564714149,0.4479892449488747,0.3383289435285851,1.8535289764404297,3
+16-24-64,4.616044302268005,31.1,30.02,1.7806806497573853,1.7980402893066407,421946,58983040,0.9090646638831078,0.8565323826323586,0.0909353361168922,0.14346761736764135,2.2371482849121094,3
+12-28-56,12.663534559580661,34.4,31.76,1.7362678995132446,1.7592709716796875,350454,47794736,0.7550381985289365,0.6940594974990195,0.2449618014710635,0.3059405025009805,1.8884072303771973,3
+8-24-40,19.057193568478297,31.3,31.34,1.8474888038635253,1.7820950439453125,194466,27353488,0.4189687043524348,0.3972183910823455,0.5810312956475652,0.6027816089176545,2.1850388050079346,3
+16-28-40,17.77745056576146,36.25,31.88,1.7050108337402343,1.7780898529052733,232810,50264464,0.5015792172425532,0.7299240783733496,0.49842078275744683,0.2700759216266504,1.8659319877624512,3
+12-24-40,20.762006374924496,34.95,32.12,1.7016396551132202,1.7971754638671875,202726,35058064,0.4367645221198137,0.5091017195518868,0.5632354778801862,0.49089828044811323,1.8711111545562744,3
+12-28-32,20.43001274949083,33.95,30.76,1.7280745162963866,1.7496302978515625,172614,36458816,0.37188950219108313,0.529442981176195,0.6281104978089169,0.47055701882380496,2.2444159984588623,3
+8-28-32,17.537883474892517,29.1,30.4,1.750657705307007,1.7990905395507812,164210,28717376,0.3537834425643213,0.4170243257761776,0.6462165574356786,0.5829756742238223,1.8530068397521973,3
+12-20-32,20.70750517945865,31.3,31.08,1.7750903015136719,1.76896904296875,138182,28127552,0.2977072264808663,0.4084590948885572,0.7022927735191338,0.5915409051114429,2.2488346099853516,3
+8-16-32,26.898616164407635,34.45,30.46,1.7516308612823486,1.7949489501953124,116882,17326400,0.2518172847804823,0.251608304259009,0.7481827152195177,0.7483916957409911,9.755339622497559,3
+8-20-40,20.707426672743395,31.6,32.76,1.7902427520751953,1.7415737915039062,178402,23538064,0.38435950137238933,0.34181205377805124,0.6156404986276107,0.6581879462219488,3.9151666164398193,3
+8-28-56,15.571405284982351,35.35,30.92,1.719902572631836,1.7768322021484375,342050,40053296,0.7369321389021747,0.581640842099002,0.2630678610978253,0.418359157900998,2.8612937927246094,3
+8-32-40,15.721816640162194,31.35,34.48,1.845094038963318,1.7344561157226563,234370,36974992,0.5049401707192009,0.536938719936653,0.49505982928079906,0.463061280063347,2.9539175033569336,3
+8-32-48,12.419668369098744,30.8,30.62,1.8005102920532225,1.7953299194335937,293938,40772064,0.6332768865505845,0.5920785555094993,0.36672311344941555,0.4079214444905007,2.489792823791504,3
+12-16-48,17.060676633865278,31.45,34.46,1.7467509393692016,1.7231957763671875,231318,31740384,0.49836476686616943,0.4609234575428122,0.5016352331338305,0.5390765424571877,6.346579074859619,3
+16-28-56,8.620198959792575,33.05,34.36,1.7871097173690795,1.7396343017578124,361738,58485296,0.7793490953433558,0.8493043073371389,0.22065090465664416,0.1506956926628611,5.940016746520996,3
+16-32-32,15.167792042977997,33.2,34.5,1.8249725131988526,1.6993013916015625,205146,52347200,0.44197830892333145,0.760168888211469,0.5580216910766685,0.239831111788531,2.5494940280914307,3
+12-28-40,15.970786165549539,31.75,32.14,1.7870604991912842,1.78615078125,221526,39573904,0.4772683204281338,0.5746792685352303,0.5227316795718662,0.4253207314647697,2.6011886596679688,3
+8-24-32,21.453097944659525,31.45,27.94,1.7555143871307373,1.8321475708007813,145842,24256832,0.31421036983414985,0.35224976718854845,0.6857896301658502,0.6477502328114515,2.809408187866211,3
+8-20-48,22.145245024960122,35.75,32.9,1.7403131046295166,1.7733747802734374,237106,27279840,0.5108347660474756,0.39614889895518307,0.4891652339525244,0.6038511010448169,2.2351856231689453,3
+8-20-32,23.440008841164563,32.1,33.14,1.7944003467559815,1.7812187255859375,130066,20459840,0.2802216505728702,0.29711109334949226,0.7197783494271298,0.7028889066505077,2.2722408771514893,3
+8-24-56,19.176586378029537,37.35,30.4,1.6807199001312256,1.834017120361328,322818,35537456,0.695497615015706,0.5160632931156585,0.30450238498429405,0.48393670688434154,2.2344207763671875,3
+8-16-64,13.143979445590578,32.45,33.66,1.7762102661132813,1.7558548828125,371282,33546880,0.7999112363568988,0.4871568006037298,0.20008876364310124,0.5128431993962702,2.254077434539795,3
+16-16-32,21.673511030305182,33.8,33.16,1.7155356426239015,1.7625028076171876,135706,35537216,0.29237279006536626,0.5160598079142882,0.7076272099346337,0.4839401920857118,2.23482346534729,3
+8-32-32,18.094365431863537,31.45,29.36,1.7801544208526612,1.80841474609375,185170,33841472,0.3989408687633846,0.4914347691123796,0.6010591312366154,0.5085652308876204,1.839606761932373,3
+12-24-32,19.157910751105725,31.1,30.9,1.7631412343978883,1.7597117919921874,154102,31961408,0.3320061876015288,0.4641330956580897,0.6679938123984712,0.5358669043419103,2.3264143466949463,3
+12-28-48,16.581960102246153,35.1,32.32,1.6619493494033812,1.756670199584961,280806,43352544,0.6049845525407516,0.6295514406428384,0.39501544745924844,0.3704485593571616,2.311727523803711,3
+8-16-40,24.07935620374652,33.85,32.78,1.7156415863037109,1.7722756713867187,164930,20386192,0.3553346518612357,0.2960416012223298,0.6446653481387643,0.7039583987776702,2.212228536605835,3
+16-20-48,13.7447728271619,31.95,33.48,1.802876543045044,1.7484088745117188,256218,45564384,0.5520107550511253,0.6616710564714149,0.4479892449488747,0.3383289435285851,2.242464065551758,3
+16-24-64,2.616044302268005,29.1,29.44,1.834028886795044,1.8499628540039061,421946,58983040,0.9090646638831078,0.8565323826323586,0.0909353361168922,0.14346761736764135,2.229877233505249,3
+12-20-48,16.8627413632542,32.4,32.12,1.7233173751831055,1.7541256591796874,245222,34947552,0.5283203419554717,0.507496900494248,0.47167965804452827,0.492503099505752,2.3347625732421875,3
+8-24-40,17.207193568478296,29.45,32.34,1.8859734954833984,1.7758383056640625,194466,27353488,0.4189687043524348,0.3972183910823455,0.5810312956475652,0.6027816089176545,2.249774694442749,3
+8-20-56,11.553463897814744,28.35,29.1,1.8363036966323854,1.8620550842285157,306178,31685168,0.6596474445981291,0.4601216288808879,0.3403525554018709,0.5398783711191121,2.308145046234131,3
+8-28-48,17.28983082764784,33.85,32.58,1.7122462673187255,1.7774384155273437,272402,35611104,0.5868784929139897,0.5171327852428209,0.41312150708601025,0.4828672147571791,1.8816044330596924,3
+8-16-32,26.59861616440763,34.15,30.9,1.7746001958847046,1.784871728515625,116882,17326400,0.2518172847804823,0.251608304259009,0.7481827152195177,0.7483916957409911,9.740123748779297,3
+8-20-40,23.357426672743394,34.25,32.32,1.7529442615509032,1.7483487060546874,178402,23538064,0.38435950137238933,0.34181205377805124,0.6156404986276107,0.6581879462219488,3.9448187351226807,3
+8-28-56,14.621405284982348,34.4,31.12,1.7453285007476806,1.7868761474609376,342050,40053296,0.7369321389021747,0.581640842099002,0.2630678610978253,0.418359157900998,2.882312059402466,3
+8-32-40,15.271816640162191,30.9,32.06,1.8046537637710571,1.7537673095703126,234370,36974992,0.5049401707192009,0.536938719936653,0.49505982928079906,0.463061280063347,2.98724627494812,3
+8-32-48,13.869668369098743,32.25,31.34,1.7791780843734741,1.778716049194336,293938,40772064,0.6332768865505845,0.5920785555094993,0.36672311344941555,0.4079214444905007,2.496013641357422,3
+12-16-48,17.960676633865276,32.35,33.74,1.7839776391983033,1.734819512939453,231318,31740384,0.49836476686616943,0.4609234575428122,0.5016352331338305,0.5390765424571877,6.171346664428711,3
+16-28-56,11.27019895979258,35.7,33.14,1.713655336380005,1.760936279296875,361738,58485296,0.7793490953433558,0.8493043073371389,0.22065090465664416,0.1506956926628611,6.065828084945679,3
+16-32-32,15.517792042977991,33.55,35.16,1.7299332571029664,1.7020002868652344,205146,52347200,0.44197830892333145,0.760168888211469,0.5580216910766685,0.239831111788531,2.6821043491363525,3
+12-32-40,15.451262382912613,33.05,35.12,1.7928313674926757,1.715093798828125,242918,44753296,0.5233564722053456,0.6498927022671467,0.47664352779465435,0.3501072977328533,2.3689382076263428,3
+16-16-32,21.273511030305183,33.4,32.3,1.7526885995864867,1.7800382598876954,135706,35537216,0.29237279006536626,0.5160598079142882,0.7076272099346337,0.4839401920857118,2.3244330883026123,3
+8-24-32,20.053097944659527,30.05,28.86,1.7513574142456054,1.8089467041015626,145842,24256832,0.31421036983414985,0.35224976718854845,0.6857896301658502,0.6477502328114515,2.888549327850342,3
+8-20-48,21.345245024960125,34.95,32.22,1.7805471630096437,1.766581085205078,237106,27279840,0.5108347660474756,0.39614889895518307,0.4891652339525244,0.6038511010448169,2.2390027046203613,3
+8-16-40,22.129356203746518,31.9,31.6,1.7579046649932861,1.775970361328125,164930,20386192,0.3553346518612357,0.2960416012223298,0.6446653481387643,0.7039583987776702,2.174025774002075,3
+8-20-32,26.790008841164564,35.45,32.08,1.71929518699646,1.7822734130859375,130066,20459840,0.2802216505728702,0.29711109334949226,0.7197783494271298,0.7028889066505077,2.233189582824707,3
+8-20-56,15.453463897814743,32.25,29.96,1.8239035930633545,1.8442307708740235,306178,31685168,0.6596474445981291,0.4601216288808879,0.3403525554018709,0.5398783711191121,2.236008405685425,3
+8-16-64,14.593979445590573,33.9,32.5,1.7510189199447632,1.7860420288085936,371282,33546880,0.7999112363568988,0.4871568006037298,0.20008876364310124,0.5128431993962702,2.2352795600891113,3
+16-20-32,20.189536643366345,33.45,31.88,1.8004425048828125,1.7776533447265626,149178,38744384,0.32139763957651984,0.562633250865724,0.6786023604234801,0.437366749134276,2.313610553741455,3
+8-32-32,17.294365431863536,30.65,29.82,1.7822647771835327,1.8044816284179688,185170,33841472,0.3989408687633846,0.4914347691123796,0.6010591312366154,0.5085652308876204,1.9316184520721436,3
+12-24-32,23.057910751105723,35.0,31.42,1.7279492645263672,1.7486828247070312,154102,31961408,0.3320061876015288,0.4641330956580897,0.6679938123984712,0.5358669043419103,2.3449037075042725,3
+12-28-48,16.38196010224615,34.9,32.24,1.6616806507110595,1.7568337371826173,280806,43352544,0.6049845525407516,0.6295514406428384,0.39501544745924844,0.3704485593571616,2.7659101486206055,3
+16-20-48,14.844772827161897,33.05,32.56,1.7820947408676147,1.7669304138183595,256218,45564384,0.5520107550511253,0.6616710564714149,0.4479892449488747,0.3383289435285851,2.0472421646118164,3
+16-24-64,6.466044302268006,32.95,30.82,1.8032503442764283,1.8215919250488282,421946,58983040,0.9090646638831078,0.8565323826323586,0.0909353361168922,0.14346761736764135,2.3766751289367676,3
+12-28-56,11.713534559580665,33.45,30.56,1.7517106380462646,1.793038623046875,350454,47794736,0.7550381985289365,0.6940594974990195,0.2449618014710635,0.3059405025009805,1.9862043857574463,3
+8-24-40,18.007193568478296,30.25,32.54,1.8539152355194093,1.7705410888671875,194466,27353488,0.4189687043524348,0.3972183910823455,0.5810312956475652,0.6027816089176545,2.233261823654175,3
+16-28-40,18.27745056576146,36.75,31.66,1.6561866445541382,1.7626435424804687,232810,50264464,0.5015792172425532,0.7299240783733496,0.49842078275744683,0.2700759216266504,2.2772414684295654,3
+12-24-40,19.512006374924496,33.7,30.5,1.6997279901504516,1.7838358276367188,202726,35058064,0.4367645221198137,0.5091017195518868,0.5632354778801862,0.49089828044811323,2.379539966583252,3
+12-28-32,22.130012749490827,35.65,31.7,1.7237618551254272,1.7445689453125,172614,36458816,0.37188950219108313,0.529442981176195,0.6281104978089169,0.47055701882380496,2.611260175704956,3
+8-28-32,18.987883474892516,30.55,29.04,1.7582858724594117,1.836197021484375,164210,28717376,0.3537834425643213,0.4170243257761776,0.6462165574356786,0.5829756742238223,2.03535795211792,3
+
+
+
+================================================
+FILE: runs/channel_search_ga_pso/ga_best.json
+================================================
+{
+  "channels": [
+    8,
+    20,
+    32
+  ],
+  "fitness": 26.790008841164564,
+  "test_acc": 35.45,
+  "train_acc": 32.08,
+  "test_loss": 1.71929518699646,
+  "train_loss": 1.7822734130859375,
+  "params": 130066,
+  "flops": 20459840,
+  "params_ratio": 0.2802216505728702,
+  "flops_ratio": 0.29711109334949226,
+  "params_compression_rate": 0.7197783494271298,
+  "flops_reduction_rate": 0.7028889066505077,
+  "eval_time_sec": 2.233189582824707,
+  "epochs": 3
+}
+
+
+================================================
+FILE: runs/channel_search_ga_pso/ga_history.csv
+================================================
+generation,best_channels,best_fitness,best_acc,best_params_ratio,best_flops_ratio
+1,8-16-32,25.698616,33.2500,0.251817,0.251608
+2,8-16-32,25.698616,33.2500,0.251817,0.251608
+3,8-20-32,28.040009,36.7000,0.280222,0.297111
+4,8-20-32,28.040009,36.7000,0.280222,0.297111
+5,8-20-32,28.040009,36.7000,0.280222,0.297111
+1,8-16-32,26.898616,34.4500,0.251817,0.251608
+2,8-16-32,26.898616,34.4500,0.251817,0.251608
+3,8-16-32,26.898616,34.4500,0.251817,0.251608
+4,8-16-32,26.898616,34.4500,0.251817,0.251608
+5,8-16-32,26.898616,34.4500,0.251817,0.251608
+1,8-16-32,26.598616,34.1500,0.251817,0.251608
+2,8-16-32,26.598616,34.1500,0.251817,0.251608
+3,8-20-32,26.790009,35.4500,0.280222,0.297111
+4,8-20-32,26.790009,35.4500,0.280222,0.297111
+5,8-20-32,26.790009,35.4500,0.280222,0.297111
+
+
+
+================================================
+FILE: runs/channel_search_ga_pso/pso_best.json
+================================================
+{
+  "channels": [
+    12,
+    24,
+    32
+  ],
+  "fitness": 23.057910751105723,
+  "test_acc": 35.0,
+  "train_acc": 31.42,
+  "test_loss": 1.7279492645263672,
+  "train_loss": 1.7486828247070312,
+  "params": 154102,
+  "flops": 31961408,
+  "params_ratio": 0.3320061876015288,
+  "flops_ratio": 0.4641330956580897,
+  "params_compression_rate": 0.6679938123984712,
+  "flops_reduction_rate": 0.5358669043419103,
+  "eval_time_sec": 2.3449037075042725,
+  "epochs": 3
+}
+
+
+================================================
+FILE: runs/channel_search_ga_pso/pso_history.csv
+================================================
+iteration,best_channels,best_fitness,best_acc,best_params_ratio,best_flops_ratio
+1,12-24-32,23.407911,35.3500,0.332006,0.464133
+2,12-24-32,23.407911,35.3500,0.332006,0.464133
+3,12-24-32,23.407911,35.3500,0.332006,0.464133
+4,12-24-32,23.407911,35.3500,0.332006,0.464133
+5,12-24-32,23.407911,35.3500,0.332006,0.464133
+1,8-16-40,24.079356,33.8500,0.355335,0.296042
+2,8-16-40,24.079356,33.8500,0.355335,0.296042
+3,8-16-40,24.079356,33.8500,0.355335,0.296042
+4,8-16-32,26.898616,34.4500,0.251817,0.251608
+5,8-16-32,26.898616,34.4500,0.251817,0.251608
+1,12-24-32,23.057911,35.0000,0.332006,0.464133
+2,12-24-32,23.057911,35.0000,0.332006,0.464133
+3,12-24-32,23.057911,35.0000,0.332006,0.464133
+4,12-24-32,23.057911,35.0000,0.332006,0.464133
+5,12-24-32,23.057911,35.0000,0.332006,0.464133
+
+
+
+================================================
+FILE: runs/channel_search_ga_pso/search_config.json
+================================================
+{
+  "algorithm": "both",
+  "data_dir": "data",
+  "save_dir": "runs",
+  "run_name": "channel_search_ga_pso",
+  "space": null,
+  "search_epochs": 3,
+  "batch_size": 128,
+  "lr": 0.05,
+  "momentum": 0.9,
+  "weight_decay": 0.0001,
+  "num_workers": 2,
+  "max_train_samples": 5000,
+  "max_test_samples": 2000,
+  "lambda_params": 0.15,
+  "lambda_flops": 0.15,
+  "seed": 42,
+  "device": "cuda",
+  "amp": true,
+  "ga_population": 8,
+  "ga_generations": 5,
+  "ga_elites": 2,
+  "ga_crossover_rate": 0.8,
+  "ga_mutation_rate": 0.25,
+  "pso_particles": 8,
+  "pso_iterations": 5,
+  "pso_w": 0.6,
+  "pso_c1": 1.4,
+  "pso_c2": 1.4,
+  "search_space": [
+    [
+      8,
+      12,
+      16
+    ],
+    [
+      16,
+      20,
+      24,
+      28,
+      32
+    ],
+    [
+      32,
+      40,
+      48,
+      56,
+      64
+    ]
+  ],
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ],
+  "model_family": "CIFAR-10 ResNet32, stage-level width search"
+}
+
+
+================================================
+FILE: runs/final_width_16-24-48/best.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_width_16-24-48/last.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_width_16-24-48/metrics.csv
+================================================
+epoch,lr,train_loss,train_acc,test_loss,test_acc,epoch_time_sec
+1,0.1,1.696713,36.7940,1.601568,44.6300,8.65
+2,0.1,1.200313,56.2260,1.138643,60.5600,6.19
+3,0.1,0.938820,66.6840,1.049896,65.4100,6.23
+4,0.1,0.775763,72.6960,0.954244,67.9800,6.14
+5,0.1,0.690156,76.1020,0.854543,71.2800,6.22
+6,0.1,0.625469,78.2700,0.860426,71.0800,6.04
+7,0.1,0.584602,79.6100,0.695974,76.9000,6.23
+8,0.1,0.548645,81.0380,0.677752,77.3700,6.29
+9,0.1,0.514305,82.3240,0.561499,80.6500,6.09
+10,0.1,0.490666,83.0920,0.546277,81.3000,6.15
+11,0.1,0.475738,83.4980,0.616145,80.1200,5.98
+12,0.1,0.453874,84.2040,0.538575,82.1900,6.20
+13,0.1,0.438093,84.8720,0.586496,80.5100,6.04
+14,0.1,0.425814,85.2800,0.755875,76.4200,6.11
+15,0.1,0.419221,85.4640,0.475776,83.6800,6.13
+16,0.1,0.398313,86.2980,0.529468,82.1800,6.16
+17,0.1,0.395281,86.2540,0.542814,82.5000,6.05
+18,0.1,0.381405,86.7260,0.536009,82.3300,6.01
+19,0.1,0.373118,87.0700,0.482062,83.7000,6.21
+20,0.1,0.366587,87.2780,0.536379,83.0500,6.03
+21,0.1,0.361982,87.5140,0.561529,82.1500,6.19
+22,0.1,0.350559,87.8020,0.652008,79.7500,6.08
+23,0.1,0.352842,87.8820,0.524256,83.1400,6.09
+24,0.1,0.341377,88.1100,0.464666,84.3800,6.18
+25,0.1,0.335691,88.3500,0.518086,83.3600,6.36
+26,0.1,0.328126,88.5980,0.538418,82.7100,6.17
+27,0.1,0.329292,88.4760,0.470702,84.6700,6.11
+28,0.1,0.322940,88.6200,0.436370,85.9600,6.13
+29,0.1,0.314935,88.9800,0.480315,84.6400,6.03
+30,0.1,0.314370,89.0560,0.576372,81.6400,6.06
+31,0.1,0.305444,89.3120,0.408239,86.3500,6.13
+32,0.1,0.307590,89.2820,0.443451,85.6500,5.92
+33,0.1,0.304423,89.3900,0.550039,82.4100,6.08
+34,0.1,0.296207,89.6960,0.455530,85.3600,6.12
+35,0.1,0.295092,89.7800,0.479979,84.8200,6.05
+36,0.1,0.298015,89.7220,0.457068,85.1700,5.96
+37,0.1,0.295301,89.7020,0.412842,86.4600,6.10
+38,0.1,0.281819,90.1700,0.467210,85.1100,6.10
+39,0.1,0.283584,90.0780,0.464304,85.2600,6.06
+40,0.1,0.283315,90.0400,0.476149,84.4100,6.04
+41,0.010000000000000002,0.193096,93.3460,0.304090,89.9300,6.19
+42,0.010000000000000002,0.160776,94.5160,0.303767,89.9500,5.93
+43,0.010000000000000002,0.150154,94.9020,0.300193,90.3200,6.17
+44,0.010000000000000002,0.141238,95.1780,0.301636,90.4400,6.21
+45,0.010000000000000002,0.137054,95.3380,0.305808,90.3600,6.09
+46,0.010000000000000002,0.129630,95.5720,0.303925,90.4600,6.08
+47,0.010000000000000002,0.125497,95.6880,0.306136,90.3000,6.15
+48,0.010000000000000002,0.121607,95.7920,0.313452,90.2300,6.12
+49,0.010000000000000002,0.117773,95.8960,0.310130,90.5900,6.11
+50,0.010000000000000002,0.112595,96.1160,0.317897,90.4400,6.13
+51,0.010000000000000002,0.111088,96.0860,0.317426,90.8300,6.19
+52,0.010000000000000002,0.108557,96.2640,0.318957,90.4500,6.27
+53,0.010000000000000002,0.108402,96.2260,0.341101,90.0800,6.28
+54,0.010000000000000002,0.103356,96.3680,0.325137,90.4900,6.22
+55,0.010000000000000002,0.098995,96.6160,0.327771,90.8000,6.32
+56,0.010000000000000002,0.096905,96.6420,0.324360,90.5600,6.08
+57,0.010000000000000002,0.096819,96.6340,0.333337,90.3700,7.82
+58,0.010000000000000002,0.093430,96.7620,0.338607,90.3700,6.11
+59,0.010000000000000002,0.090173,96.8580,0.338812,90.4700,9.64
+60,0.010000000000000002,0.093097,96.7600,0.336050,90.5300,6.10
+61,0.0010000000000000002,0.081839,97.2080,0.326781,90.6900,6.20
+62,0.0010000000000000002,0.078475,97.3960,0.327628,90.8600,6.14
+63,0.0010000000000000002,0.076292,97.4460,0.329133,90.7900,6.25
+64,0.0010000000000000002,0.077095,97.3000,0.331284,90.8400,6.13
+65,0.0010000000000000002,0.072991,97.5440,0.329524,90.8000,6.12
+66,0.0010000000000000002,0.075875,97.4380,0.326510,90.9600,6.18
+67,0.0010000000000000002,0.075496,97.4440,0.326364,90.8900,6.05
+68,0.0010000000000000002,0.074463,97.4660,0.329455,90.7700,7.11
+69,0.0010000000000000002,0.072507,97.6160,0.330307,90.9200,6.17
+70,0.0010000000000000002,0.071414,97.6540,0.330220,90.8300,6.16
+71,0.0010000000000000002,0.070492,97.6160,0.332218,90.8000,6.12
+72,0.0010000000000000002,0.072239,97.5200,0.333630,90.7400,6.29
+73,0.0010000000000000002,0.071816,97.4860,0.331188,90.7800,6.12
+74,0.0010000000000000002,0.070692,97.6260,0.330798,90.8800,6.17
+75,0.0010000000000000002,0.070846,97.6720,0.335216,90.7000,6.17
+76,0.0010000000000000002,0.069378,97.6880,0.333668,90.8700,6.44
+77,0.0010000000000000002,0.069868,97.6120,0.335699,90.7400,6.23
+78,0.0010000000000000002,0.068526,97.6780,0.335177,90.8100,6.18
+79,0.0010000000000000002,0.069482,97.6740,0.336644,90.8300,6.10
+80,0.0010000000000000002,0.068758,97.6940,0.335364,90.7300,6.33
+1,0.1,1.714288,35.8440,1.584466,44.1100,6.96
+2,0.1,1.229940,55.2360,1.165165,59.0200,4.64
+3,0.1,0.973423,65.2320,1.006453,64.8700,4.79
+4,0.1,0.827968,70.7960,1.307385,60.3800,4.74
+5,0.1,0.722660,74.7400,0.801571,72.5800,4.74
+6,0.1,0.648406,77.5780,0.769236,73.4800,4.79
+7,0.1,0.603113,79.0600,0.719191,76.6600,4.83
+8,0.1,0.566052,80.2460,0.657429,78.0200,4.69
+9,0.1,0.536944,81.5140,0.759186,74.5000,4.83
+10,0.1,0.506810,82.6820,0.641047,78.6000,4.79
+11,0.1,0.484543,83.2600,0.619527,79.9800,4.67
+12,0.1,0.465704,83.8580,0.549546,81.5900,4.82
+13,0.1,0.449464,84.4580,0.530104,81.7800,4.75
+14,0.1,0.440988,84.7280,0.641911,79.2000,4.77
+15,0.1,0.427054,85.3180,0.582113,80.0000,4.78
+16,0.1,0.411761,85.6420,0.522020,82.5400,4.68
+17,0.1,0.403752,86.0000,0.591905,81.4100,4.75
+
+
+
+================================================
+FILE: runs/final_width_16-24-48/summary.json
+================================================
+{
+  "run_name": "final_width_16-24-48",
+  "model": "WidthResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    16,
+    24,
+    48
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 80,
+  "best_acc": 90.96,
+  "best_epoch": 66,
+  "params": 272858,
+  "flops": 49471968,
+  "total_train_time_sec": 501.70339035987854,
+  "checkpoint_best": "runs/final_width_16-24-48/best.pt",
+  "checkpoint_last": "runs/final_width_16-24-48/last.pt"
+}
+
+
+================================================
+FILE: runs/final_width_8-16-32/best.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_width_8-16-32/last.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_width_8-16-32/metrics.csv
+================================================
+epoch,lr,train_loss,train_acc,test_loss,test_acc,epoch_time_sec
+1,0.1,1.767184,32.6020,1.615470,40.6400,14.84
+2,0.1,1.356160,50.1860,1.297893,53.5400,8.40
+3,0.1,1.095396,60.5560,1.247340,59.7000,8.54
+4,0.1,0.942713,66.4280,1.320334,57.7400,8.20
+5,0.1,0.839886,70.3980,0.940725,67.4700,8.25
+6,0.1,0.761572,73.3380,0.862626,71.2900,8.28
+7,0.1,0.707506,75.4480,0.824248,72.6600,8.00
+8,0.1,0.669819,76.6820,0.793144,73.5400,8.40
+9,0.1,0.631489,78.0660,0.842795,71.1200,8.12
+10,0.1,0.606368,78.8580,0.713240,76.8900,8.10
+11,0.1,0.584945,79.6580,0.828362,72.9400,8.36
+12,0.1,0.560977,80.3740,0.619193,79.1100,8.39
+13,0.1,0.546395,80.9020,0.608411,78.8700,8.43
+14,0.1,0.527523,81.4940,0.574367,80.9700,8.27
+15,0.1,0.519334,81.8420,0.611400,79.6700,8.19
+16,0.1,0.504507,82.5380,0.669016,78.1200,7.98
+17,0.1,0.491020,82.9900,0.769991,75.9600,5.87
+18,0.1,0.487495,83.0380,0.742996,76.7600,6.17
+19,0.1,0.478610,83.4060,0.699373,77.6300,6.09
+20,0.1,0.465380,83.8740,0.629128,79.8200,6.18
+21,0.1,0.461518,83.9920,0.532745,82.1800,6.48
+22,0.1,0.453649,84.3120,0.643892,78.8400,6.67
+23,0.1,0.441779,84.7880,0.592402,80.2900,6.30
+24,0.1,0.441817,84.8820,0.540191,82.0600,6.44
+25,0.1,0.436850,84.8680,0.587713,80.5600,6.34
+26,0.1,0.429136,85.1420,0.601350,80.4100,6.67
+27,0.1,0.424457,85.3500,0.632338,80.2300,6.64
+28,0.1,0.422902,85.3000,0.583895,80.5900,6.20
+29,0.1,0.421997,85.3420,0.582407,80.6500,6.50
+30,0.1,0.411061,85.8560,0.627995,79.6600,6.72
+31,0.1,0.413043,85.7300,0.525941,82.7200,6.88
+32,0.1,0.407305,85.7800,0.637853,80.0300,6.77
+33,0.1,0.404624,85.9460,0.567428,81.3700,6.65
+34,0.1,0.394911,86.3000,0.553213,82.3900,6.92
+35,0.1,0.399330,86.1740,0.566788,81.7700,6.85
+36,0.1,0.392785,86.3680,0.576654,81.6900,8.05
+37,0.1,0.392929,86.4200,0.582703,81.2200,7.85
+38,0.1,0.389547,86.5520,0.499999,83.3200,7.64
+39,0.1,0.386358,86.6580,0.568891,81.4400,6.98
+40,0.1,0.388425,86.5940,0.550205,82.2300,7.86
+41,0.010000000000000002,0.287981,90.1980,0.363835,87.8300,7.59
+42,0.010000000000000002,0.258077,91.1520,0.363442,87.9900,7.83
+43,0.010000000000000002,0.250967,91.4480,0.358635,88.2000,7.74
+44,0.010000000000000002,0.244000,91.5280,0.359561,88.0400,7.71
+45,0.010000000000000002,0.238259,91.8060,0.365276,88.0400,7.46
+46,0.010000000000000002,0.233677,91.8720,0.365537,88.1500,7.97
+47,0.010000000000000002,0.228728,92.0540,0.362597,88.1600,7.68
+48,0.010000000000000002,0.222026,92.3280,0.359600,88.4700,7.43
+49,0.010000000000000002,0.219557,92.3260,0.365810,88.5200,7.61
+50,0.010000000000000002,0.215997,92.4200,0.361438,88.3300,6.99
+51,0.010000000000000002,0.214917,92.4500,0.362995,88.2400,5.89
+52,0.010000000000000002,0.211561,92.5340,0.365651,87.9700,6.00
+53,0.010000000000000002,0.213076,92.5960,0.360728,88.5500,5.95
+54,0.010000000000000002,0.209067,92.8480,0.357850,88.2000,6.18
+55,0.010000000000000002,0.205910,92.7040,0.366082,88.3300,5.94
+56,0.010000000000000002,0.202564,92.8900,0.364078,88.1100,6.02
+57,0.010000000000000002,0.202749,92.9380,0.366309,88.3600,5.81
+58,0.010000000000000002,0.201781,92.9440,0.362818,88.6800,6.11
+59,0.010000000000000002,0.198558,92.9800,0.369795,88.2800,6.06
+60,0.010000000000000002,0.194995,93.0680,0.372773,88.2400,5.99
+61,0.0010000000000000002,0.183479,93.5060,0.357884,88.6600,6.05
+62,0.0010000000000000002,0.177739,93.7720,0.358456,88.7000,5.97
+63,0.0010000000000000002,0.178695,93.7800,0.355225,88.6900,6.23
+64,0.0010000000000000002,0.174866,93.9100,0.357280,88.8500,5.84
+65,0.0010000000000000002,0.177951,93.8180,0.354110,88.9000,5.85
+66,0.0010000000000000002,0.172973,93.9580,0.358693,88.7400,6.03
+67,0.0010000000000000002,0.174400,93.9320,0.357444,88.9300,6.16
+68,0.0010000000000000002,0.171934,93.9860,0.358139,88.8800,6.45
+69,0.0010000000000000002,0.171363,93.9200,0.359493,88.7400,6.34
+70,0.0010000000000000002,0.173460,93.9000,0.358096,88.9200,6.25
+71,0.0010000000000000002,0.172362,93.9720,0.358183,88.7600,6.77
+72,0.0010000000000000002,0.170495,94.0020,0.356769,88.8800,4.76
+73,0.0010000000000000002,0.171751,93.8720,0.359508,88.8700,4.72
+74,0.0010000000000000002,0.170012,94.1360,0.360904,88.7100,5.02
+75,0.0010000000000000002,0.174815,93.9240,0.358584,88.7700,5.08
+76,0.0010000000000000002,0.171555,93.9060,0.358450,88.7000,4.85
+77,0.0010000000000000002,0.169564,94.0120,0.360471,88.7700,5.11
+78,0.0010000000000000002,0.172360,94.0020,0.359987,88.6600,5.06
+79,0.0010000000000000002,0.167838,94.1780,0.360940,88.7100,5.19
+80,0.0010000000000000002,0.171597,93.9460,0.360886,88.6200,4.98
+
+
+
+================================================
+FILE: runs/final_width_8-16-32/summary.json
+================================================
+{
+  "run_name": "final_width_8-16-32",
+  "model": "WidthResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    8,
+    16,
+    32
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 80,
+  "best_acc": 88.93,
+  "best_epoch": 67,
+  "params": 116882,
+  "flops": 17326400,
+  "total_train_time_sec": 550.7849042415619,
+  "checkpoint_best": "runs/final_width_8-16-32/best.pt",
+  "checkpoint_last": "runs/final_width_8-16-32/last.pt"
+}
+
+
+================================================
+FILE: runs/final_width_8-20-32/best.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_width_8-20-32/last.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_width_8-20-32/metrics.csv
+================================================
+epoch,lr,train_loss,train_acc,test_loss,test_acc,epoch_time_sec
+1,0.1,1.697746,36.5900,1.503822,43.2000,9.57
+2,0.1,1.219522,55.7540,1.249353,55.5100,4.82
+3,0.1,0.984189,64.8600,0.953915,67.7900,4.90
+4,0.1,0.849515,70.1600,0.893785,69.9800,4.76
+5,0.1,0.758559,73.4740,1.121072,64.1800,4.77
+6,0.1,0.696617,75.7100,0.903229,70.2900,4.83
+7,0.1,0.655933,77.1100,0.877521,70.4800,4.91
+8,0.1,0.625673,78.1780,0.689714,76.0100,4.79
+9,0.1,0.595415,79.3460,0.765870,75.3600,4.91
+10,0.1,0.567495,80.3800,1.177902,65.3000,4.87
+11,0.1,0.559006,80.5280,0.644001,78.2300,4.85
+12,0.1,0.532627,81.3820,0.674018,78.0200,4.85
+13,0.1,0.517681,82.1740,0.811662,74.9600,4.94
+14,0.1,0.503955,82.4600,0.606443,79.6600,4.84
+15,0.1,0.494470,82.7460,0.621226,79.3100,4.83
+16,0.1,0.486588,83.1260,0.550410,81.7400,4.85
+17,0.1,0.474531,83.5220,0.643375,79.3700,4.77
+18,0.1,0.470692,83.7260,0.696641,77.9300,4.89
+19,0.1,0.460753,83.9280,0.520828,82.6200,4.84
+20,0.1,0.454695,84.2580,0.615604,79.8100,4.90
+21,0.1,0.438938,84.7480,0.584248,79.9000,4.83
+22,0.1,0.439468,84.9400,0.517472,82.7300,4.94
+23,0.1,0.437320,84.8960,0.686341,78.5900,4.81
+24,0.1,0.427795,85.1740,0.570742,81.7600,4.84
+25,0.1,0.426433,85.1620,0.544018,82.4400,4.86
+26,0.1,0.418266,85.3840,0.504866,83.2200,4.87
+27,0.1,0.413346,85.5280,0.558766,82.0000,4.90
+28,0.1,0.411339,85.6820,0.618703,79.9600,4.89
+29,0.1,0.409461,85.6060,0.852640,73.9300,4.82
+30,0.1,0.406002,85.9600,0.652239,79.1900,4.96
+31,0.1,0.398765,86.1280,0.633434,79.2300,4.95
+32,0.1,0.398564,86.2380,0.516433,82.9200,4.87
+33,0.1,0.387069,86.5380,0.497287,83.5100,5.52
+34,0.1,0.391831,86.3820,0.557089,81.6600,5.85
+35,0.1,0.382152,86.7880,0.597749,80.4600,6.10
+36,0.1,0.381760,86.7380,0.635908,79.6000,6.18
+37,0.1,0.377712,86.8740,0.582552,81.4500,6.01
+38,0.1,0.380966,86.8820,0.574808,81.0000,6.25
+39,0.1,0.372910,87.1580,0.561528,81.8900,6.14
+40,0.1,0.372403,87.0600,0.505766,83.5600,6.06
+41,0.010000000000000002,0.276685,90.4400,0.355120,88.1400,5.96
+42,0.010000000000000002,0.248244,91.4420,0.359230,88.2400,6.01
+43,0.010000000000000002,0.237730,91.8180,0.353441,88.4800,6.37
+44,0.010000000000000002,0.231953,92.0440,0.348315,88.7600,6.37
+45,0.010000000000000002,0.225725,92.1180,0.352751,88.7600,6.27
+46,0.010000000000000002,0.218527,92.4880,0.352758,88.7600,6.24
+47,0.010000000000000002,0.216125,92.5200,0.358774,88.8000,6.26
+48,0.010000000000000002,0.215004,92.5840,0.355352,88.7400,6.29
+49,0.010000000000000002,0.209452,92.7340,0.355573,88.8500,6.22
+50,0.010000000000000002,0.206827,92.7860,0.355280,88.6900,6.34
+51,0.010000000000000002,0.206718,92.7320,0.360350,88.8400,6.23
+52,0.010000000000000002,0.200952,93.0340,0.362099,88.6700,6.17
+53,0.010000000000000002,0.199557,92.9460,0.365226,88.6000,6.26
+54,0.010000000000000002,0.197447,93.0160,0.363549,88.8500,6.01
+55,0.010000000000000002,0.197353,93.1380,0.359601,88.8800,6.08
+56,0.010000000000000002,0.193974,93.2280,0.363361,88.8900,6.13
+57,0.010000000000000002,0.191818,93.2840,0.359324,88.9400,6.26
+58,0.010000000000000002,0.187034,93.4580,0.376525,88.6700,5.95
+59,0.010000000000000002,0.185970,93.5700,0.363804,88.7400,6.05
+60,0.010000000000000002,0.187323,93.4100,0.359856,89.0500,6.33
+61,0.0010000000000000002,0.174344,93.8740,0.350608,89.1600,6.33
+62,0.0010000000000000002,0.169175,94.1020,0.348595,89.2600,6.21
+63,0.0010000000000000002,0.167099,94.1680,0.353199,88.9600,6.50
+64,0.0010000000000000002,0.167820,94.0940,0.353365,89.1400,6.48
+65,0.0010000000000000002,0.166251,94.2080,0.352386,89.0900,8.37
+66,0.0010000000000000002,0.165565,94.1740,0.355221,89.0700,7.75
+67,0.0010000000000000002,0.163977,94.2360,0.351615,89.1600,8.51
+68,0.0010000000000000002,0.164170,94.2820,0.355360,89.1000,8.32
+69,0.0010000000000000002,0.161997,94.3880,0.354569,89.1700,8.34
+70,0.0010000000000000002,0.162845,94.2880,0.352789,89.1600,8.34
+71,0.0010000000000000002,0.164728,94.2680,0.354200,89.1300,8.43
+72,0.0010000000000000002,0.163732,94.2380,0.353035,89.1400,8.65
+73,0.0010000000000000002,0.159811,94.4100,0.355358,89.1400,8.71
+74,0.0010000000000000002,0.164850,94.2140,0.356695,89.2400,8.53
+75,0.0010000000000000002,0.161110,94.4640,0.357337,89.0900,8.42
+76,0.0010000000000000002,0.159631,94.4200,0.355782,89.2200,8.47
+77,0.0010000000000000002,0.159652,94.4320,0.357358,89.1500,8.30
+78,0.0010000000000000002,0.161222,94.5020,0.354535,89.3000,8.49
+79,0.0010000000000000002,0.162202,94.2460,0.356576,89.3200,8.50
+80,0.0010000000000000002,0.161098,94.3140,0.357805,89.1400,8.38
+
+
+
+================================================
+FILE: runs/final_width_8-20-32/summary.json
+================================================
+{
+  "run_name": "final_width_8-20-32",
+  "model": "WidthResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    8,
+    20,
+    32
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 80,
+  "best_acc": 89.32,
+  "best_epoch": 79,
+  "params": 130066,
+  "flops": 20459840,
+  "total_train_time_sec": 493.74221301078796,
+  "checkpoint_best": "runs/final_width_8-20-32/best.pt",
+  "checkpoint_last": "runs/final_width_8-20-32/last.pt"
+}
+
+
+================================================
+FILE: runs/resnet32_baseline/best.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/resnet32_baseline/last.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/resnet32_baseline/metrics.csv
+================================================
+epoch,lr,train_loss,train_acc,test_loss,test_acc,epoch_time_sec
+1,0.1,1.730650,35.3540,1.472765,47.2400,7.12
+2,0.1,1.230723,55.5080,1.227947,57.4600,4.74
+3,0.1,0.977230,65.2880,1.049454,63.4900,4.70
+4,0.1,0.821843,71.1740,1.000143,67.4300,4.72
+5,0.1,0.696199,75.6520,0.882813,71.8400,4.76
+6,0.1,0.629645,78.0020,0.708338,76.3500,4.75
+7,0.1,0.572938,80.1120,0.722264,76.1500,4.72
+8,0.1,0.534847,81.7160,0.704902,77.2400,4.77
+9,0.1,0.498439,82.8220,0.655552,78.4900,4.84
+10,0.1,0.475532,83.5940,0.606129,80.5800,4.64
+11,0.1,0.449559,84.3420,0.556754,81.1300,4.65
+12,0.1,0.430046,85.0700,0.566595,81.0200,4.64
+13,0.1,0.417097,85.4660,0.557256,81.4400,4.72
+14,0.1,0.400617,86.1940,0.558608,81.5800,4.79
+15,0.1,0.380802,86.7040,0.494018,83.5100,4.81
+16,0.1,0.378376,86.7860,0.596395,80.9600,4.63
+17,0.1,0.368549,87.2220,0.558897,82.1100,4.68
+18,0.1,0.355423,87.6180,0.492095,83.2700,4.73
+19,0.1,0.347255,87.8820,0.426882,85.6300,4.62
+20,0.1,0.337720,88.2580,0.510941,83.6000,4.64
+21,0.1,0.327200,88.5960,0.461216,84.8800,4.75
+22,0.1,0.326840,88.6520,0.527547,83.3600,4.70
+23,0.1,0.317167,89.0020,0.512813,83.5300,4.77
+24,0.1,0.314760,89.0820,0.515230,83.6300,4.77
+25,0.1,0.306912,89.2700,0.431828,85.8400,4.75
+26,0.1,0.295814,89.7460,0.490455,84.3700,4.74
+27,0.1,0.295408,89.7020,0.519171,83.6300,4.70
+28,0.1,0.290046,89.8340,0.474859,84.8500,4.70
+29,0.1,0.287972,90.0660,0.596681,81.8300,4.69
+30,0.1,0.284721,90.2520,0.526665,82.7900,4.69
+31,0.1,0.282506,90.3000,0.557026,84.2500,4.67
+32,0.1,0.275064,90.2880,0.442089,85.9200,13.03
+33,0.1,0.271591,90.5900,0.466887,85.1500,4.71
+34,0.1,0.269213,90.5200,0.501094,84.3100,4.59
+35,0.1,0.262210,90.7880,0.435493,86.2100,4.58
+36,0.1,0.260089,90.8620,0.423171,86.7900,4.70
+37,0.1,0.261152,90.9740,0.513627,84.2200,4.74
+38,0.1,0.254417,91.1160,0.499728,84.1700,4.78
+39,0.1,0.252524,91.2880,0.388483,87.3500,4.77
+40,0.1,0.250784,91.2380,0.483637,85.4800,4.60
+41,0.1,0.252184,91.2540,0.499389,84.0400,4.71
+42,0.1,0.244697,91.4320,0.532981,83.7300,4.74
+43,0.1,0.242277,91.6160,0.433192,86.6800,4.67
+44,0.1,0.243804,91.6140,0.503378,85.1900,4.79
+45,0.1,0.237904,91.6520,0.464367,86.3100,4.77
+46,0.1,0.231208,91.9320,0.414556,86.9500,4.74
+47,0.1,0.239466,91.6040,0.503767,85.6600,4.73
+48,0.1,0.235646,91.7260,0.444776,86.5500,4.77
+49,0.1,0.234007,91.8120,0.545238,83.9800,4.70
+50,0.1,0.232250,91.8900,0.500833,84.7600,4.76
+51,0.1,0.233967,91.7180,0.542604,83.7300,4.76
+52,0.1,0.226672,92.0920,0.472833,85.4400,4.77
+53,0.1,0.224779,92.2420,0.442050,86.4600,4.76
+54,0.1,0.228686,92.0040,0.483639,85.2800,4.70
+55,0.1,0.225681,92.0720,0.650782,80.9700,4.89
+56,0.1,0.224480,92.1880,0.408136,87.3400,6.40
+57,0.1,0.219779,92.3080,0.425679,86.7700,6.67
+58,0.1,0.221737,92.1880,0.437124,86.5700,6.57
+59,0.1,0.219864,92.1780,0.449406,86.3800,6.55
+60,0.1,0.218139,92.3880,0.395208,87.1900,6.54
+61,0.1,0.211528,92.6780,0.507615,85.5500,6.43
+62,0.1,0.214786,92.5080,0.452245,86.2000,6.42
+63,0.1,0.215405,92.4120,0.402049,87.8700,6.63
+64,0.1,0.211623,92.7120,0.424002,86.8300,6.50
+65,0.1,0.211057,92.5080,0.591713,84.7500,6.69
+66,0.1,0.206764,92.8360,0.423250,87.0100,6.72
+67,0.1,0.208456,92.6700,0.448119,86.5700,6.65
+68,0.1,0.206856,92.7360,0.460974,86.5400,6.67
+69,0.1,0.213892,92.5940,0.411789,87.3100,6.45
+70,0.1,0.208409,92.7200,0.435693,86.9300,6.51
+71,0.1,0.203789,92.8360,0.449861,86.2700,6.65
+72,0.1,0.208256,92.6200,0.478494,85.7500,6.55
+73,0.1,0.196548,93.1600,0.507269,85.3700,6.61
+74,0.1,0.205579,92.8980,0.507537,84.6300,6.59
+75,0.1,0.207452,92.7060,0.453591,85.8600,6.72
+76,0.1,0.195300,93.2300,0.491864,85.5200,6.61
+77,0.1,0.196864,93.1720,0.393498,87.7100,6.58
+78,0.1,0.201115,92.9340,0.437903,87.1600,6.57
+79,0.1,0.201922,92.8900,0.411124,87.8300,6.67
+80,0.1,0.197525,93.0180,0.370678,88.3900,6.58
+81,0.1,0.203030,92.7560,0.442745,87.1200,6.68
+82,0.1,0.194478,93.0720,0.394855,87.9600,6.61
+83,0.1,0.198986,93.0020,0.504197,84.9900,6.68
+84,0.1,0.198497,92.9860,0.545027,84.4100,6.73
+85,0.1,0.195892,93.1140,0.489866,85.9200,6.60
+86,0.1,0.188206,93.2740,0.456366,86.1000,6.62
+87,0.1,0.192104,93.2360,0.665467,82.5600,6.73
+88,0.1,0.192940,93.2040,0.507971,85.8900,6.60
+89,0.1,0.194244,93.3020,0.415651,86.9900,6.73
+90,0.1,0.191407,93.2760,0.432480,86.7100,6.76
+91,0.1,0.191990,93.2000,0.394278,88.3900,6.65
+92,0.1,0.186715,93.5280,0.448078,86.2200,6.61
+93,0.1,0.187982,93.4500,0.439506,86.6900,6.51
+94,0.1,0.188612,93.3400,0.395337,88.3100,5.37
+95,0.1,0.189984,93.4380,0.572125,83.8200,6.30
+96,0.1,0.192008,93.2200,0.432793,87.0100,6.13
+97,0.1,0.185440,93.4400,0.368815,88.3000,6.05
+98,0.1,0.188969,93.2880,0.393388,87.9500,5.98
+99,0.1,0.187182,93.5240,0.391875,87.8000,6.17
+100,0.1,0.184675,93.5720,0.407137,87.9100,6.30
+101,0.010000000000000002,0.105197,96.4540,0.262192,91.8200,6.11
+102,0.010000000000000002,0.078456,97.3880,0.257876,91.9200,6.12
+103,0.010000000000000002,0.065998,97.8580,0.262889,92.1100,6.36
+104,0.010000000000000002,0.058216,98.1480,0.265564,91.9000,6.03
+105,0.010000000000000002,0.052308,98.3580,0.269488,92.1400,6.17
+106,0.010000000000000002,0.050897,98.3880,0.271498,92.0300,5.99
+107,0.010000000000000002,0.047755,98.4600,0.269860,92.1800,5.25
+108,0.010000000000000002,0.044888,98.5660,0.270091,92.3000,6.56
+109,0.010000000000000002,0.042279,98.6480,0.274704,92.3000,6.68
+110,0.010000000000000002,0.041229,98.6820,0.281240,92.0600,6.80
+111,0.010000000000000002,0.038815,98.7560,0.284368,92.1700,6.79
+112,0.010000000000000002,0.036647,98.8320,0.274748,92.6200,6.75
+113,0.010000000000000002,0.035003,98.8880,0.285076,92.3800,6.63
+114,0.010000000000000002,0.032577,98.9840,0.284728,92.4300,6.87
+115,0.010000000000000002,0.030579,99.1100,0.286108,92.2800,6.71
+116,0.010000000000000002,0.028874,99.1040,0.286616,92.4100,6.61
+117,0.010000000000000002,0.028149,99.1300,0.287906,92.3600,6.66
+118,0.010000000000000002,0.026504,99.1800,0.291552,92.3300,6.71
+119,0.010000000000000002,0.025839,99.2000,0.297673,92.4700,6.78
+120,0.010000000000000002,0.026138,99.2040,0.297146,92.5600,6.77
+121,0.010000000000000002,0.023762,99.2540,0.307764,92.2400,6.64
+122,0.010000000000000002,0.023397,99.3140,0.304868,92.2100,6.74
+123,0.010000000000000002,0.022493,99.3220,0.309589,92.2100,6.76
+124,0.010000000000000002,0.022774,99.3260,0.310541,92.2000,51.24
+125,0.010000000000000002,0.021610,99.3580,0.313131,92.2400,6.69
+126,0.010000000000000002,0.022176,99.3040,0.312999,92.1300,54.03
+127,0.010000000000000002,0.019769,99.4100,0.319844,92.2700,6.84
+128,0.010000000000000002,0.020006,99.3960,0.314203,92.3400,11.64
+129,0.010000000000000002,0.019488,99.3940,0.315346,92.2400,6.74
+130,0.010000000000000002,0.019918,99.4120,0.313070,92.4400,6.76
+131,0.010000000000000002,0.019254,99.4420,0.318420,92.1900,6.67
+132,0.010000000000000002,0.017487,99.4740,0.316039,92.3500,5.16
+133,0.010000000000000002,0.017008,99.5280,0.317090,92.2300,4.73
+134,0.010000000000000002,0.017610,99.5160,0.327712,92.0600,4.71
+135,0.010000000000000002,0.017193,99.4960,0.330459,92.4100,4.73
+136,0.010000000000000002,0.014457,99.6260,0.331247,92.5100,4.73
+137,0.010000000000000002,0.015905,99.5300,0.328207,92.4700,4.87
+138,0.010000000000000002,0.014421,99.5900,0.327053,92.4500,4.74
+139,0.010000000000000002,0.014794,99.5860,0.325065,92.3900,4.74
+140,0.010000000000000002,0.015288,99.5540,0.331927,92.3200,4.77
+141,0.010000000000000002,0.014705,99.5980,0.329135,92.4400,4.79
+142,0.010000000000000002,0.015015,99.5740,0.330632,92.4200,4.70
+143,0.010000000000000002,0.013604,99.6360,0.334697,92.3800,4.75
+144,0.010000000000000002,0.015352,99.5300,0.332545,92.3200,4.71
+145,0.010000000000000002,0.012924,99.6660,0.350146,92.2500,4.63
+146,0.010000000000000002,0.012389,99.6780,0.345328,92.4600,4.66
+147,0.010000000000000002,0.012195,99.6940,0.345263,92.3300,4.66
+148,0.010000000000000002,0.012758,99.6480,0.337201,92.5300,4.72
+149,0.010000000000000002,0.013344,99.6200,0.339618,92.4900,4.82
+150,0.010000000000000002,0.013292,99.6280,0.343879,92.4000,4.73
+151,0.0010000000000000002,0.010519,99.7320,0.337842,92.5400,4.79
+152,0.0010000000000000002,0.009871,99.7600,0.337799,92.4700,4.74
+153,0.0010000000000000002,0.009839,99.7720,0.334326,92.5700,4.74
+154,0.0010000000000000002,0.009435,99.7760,0.337330,92.5900,4.75
+155,0.0010000000000000002,0.008672,99.7940,0.335979,92.6100,4.79
+156,0.0010000000000000002,0.008736,99.8000,0.334399,92.6400,4.70
+157,0.0010000000000000002,0.009481,99.7760,0.333623,92.6400,4.70
+158,0.0010000000000000002,0.008554,99.7920,0.334825,92.6400,4.75
+159,0.0010000000000000002,0.008471,99.8000,0.341740,92.5600,4.75
+160,0.0010000000000000002,0.008011,99.8400,0.337440,92.5300,4.76
+161,0.0010000000000000002,0.008241,99.8060,0.334594,92.6300,4.61
+162,0.0010000000000000002,0.007966,99.8280,0.335504,92.6300,4.72
+163,0.0010000000000000002,0.007816,99.8320,0.338392,92.5800,4.71
+164,0.0010000000000000002,0.007443,99.8560,0.334232,92.5500,4.70
+165,0.0010000000000000002,0.008171,99.8320,0.335941,92.6300,4.71
+166,0.0010000000000000002,0.007892,99.8220,0.337355,92.5900,4.71
+167,0.0010000000000000002,0.007568,99.8560,0.335925,92.5800,4.78
+168,0.0010000000000000002,0.007929,99.8140,0.337501,92.5800,4.70
+169,0.0010000000000000002,0.007567,99.8440,0.338652,92.6000,4.72
+170,0.0010000000000000002,0.007684,99.8480,0.336862,92.6100,4.67
+171,0.0010000000000000002,0.008069,99.8200,0.335623,92.6400,4.70
+172,0.0010000000000000002,0.006615,99.8820,0.336961,92.5900,4.70
+173,0.0010000000000000002,0.007619,99.8360,0.340824,92.6000,4.69
+174,0.0010000000000000002,0.007872,99.8300,0.338140,92.6200,4.82
+175,0.0010000000000000002,0.007520,99.8300,0.334497,92.4900,4.77
+176,0.0010000000000000002,0.007457,99.8420,0.339979,92.6300,4.75
+177,0.0010000000000000002,0.007254,99.8560,0.338761,92.6300,4.78
+178,0.0010000000000000002,0.007182,99.8560,0.338234,92.6400,4.75
+179,0.0010000000000000002,0.007205,99.8440,0.338147,92.5700,4.70
+180,0.0010000000000000002,0.007257,99.8720,0.342554,92.5800,4.73
+181,0.0010000000000000002,0.007609,99.8360,0.341827,92.6800,4.71
+182,0.0010000000000000002,0.007457,99.8160,0.343874,92.5200,4.68
+183,0.0010000000000000002,0.007119,99.8560,0.341791,92.6000,4.79
+184,0.0010000000000000002,0.006952,99.8520,0.342838,92.6200,4.77
+185,0.0010000000000000002,0.007220,99.8580,0.341101,92.5500,4.75
+186,0.0010000000000000002,0.007813,99.8360,0.340727,92.6500,4.74
+187,0.0010000000000000002,0.006687,99.8720,0.338269,92.5500,4.84
+188,0.0010000000000000002,0.006913,99.8580,0.341370,92.5500,4.81
+189,0.0010000000000000002,0.007093,99.8520,0.341755,92.6300,4.68
+190,0.0010000000000000002,0.007172,99.8600,0.340812,92.6300,4.67
+191,0.0010000000000000002,0.006819,99.8620,0.343505,92.6300,4.77
+192,0.0010000000000000002,0.006576,99.8820,0.341335,92.6800,4.72
+193,0.0010000000000000002,0.007144,99.8460,0.341450,92.6900,4.72
+194,0.0010000000000000002,0.006869,99.8640,0.341949,92.7000,4.66
+195,0.0010000000000000002,0.006345,99.8840,0.343925,92.5900,4.67
+196,0.0010000000000000002,0.006197,99.8940,0.343575,92.6600,4.62
+197,0.0010000000000000002,0.006996,99.8520,0.341064,92.5500,4.71
+198,0.0010000000000000002,0.006668,99.8780,0.341252,92.6300,4.78
+199,0.0010000000000000002,0.006552,99.8920,0.339379,92.5300,4.76
+200,0.0010000000000000002,0.006117,99.9120,0.340642,92.5700,4.73
+1,0.1,1.740235,35.2160,1.443795,47.6800,6.78
+2,0.1,1.221237,55.8080,1.309155,55.0700,4.75
+3,0.1,0.969531,65.7440,1.091118,62.1700,4.73
+4,0.1,0.811018,71.4640,0.860503,70.5700,4.76
+5,0.1,0.694597,75.8080,0.832387,73.1600,4.75
+6,0.1,0.622717,78.2200,0.683213,77.0600,4.79
+7,0.1,0.569531,80.1820,0.628163,78.9800,4.87
+8,0.1,0.532452,81.6380,0.614787,79.4000,4.80
+9,0.1,0.499018,82.7360,0.564241,80.5200,5.64
+10,0.1,0.465511,83.9880,0.554637,81.1600,5.81
+11,0.1,0.452272,84.3620,0.541894,81.9200,6.31
+12,0.1,0.424417,85.2320,0.499503,82.8600,6.12
+13,0.1,0.410034,85.6700,0.487157,83.7200,6.16
+14,0.1,0.394456,86.4680,0.732179,77.3700,6.02
+15,0.1,0.382551,86.8100,0.587695,80.8600,6.12
+16,0.1,0.371863,87.0440,0.556033,82.1000,6.10
+17,0.1,0.363633,87.3080,0.618484,79.9700,6.09
+18,0.1,0.352091,87.6780,0.430888,85.6400,6.19
+19,0.1,0.344525,87.9480,0.466651,84.7700,6.07
+20,0.1,0.331341,88.5320,0.490960,84.0700,6.12
+21,0.1,0.330600,88.4080,0.528256,83.9200,6.13
+22,0.1,0.321004,88.8360,0.537050,83.5700,6.29
+23,0.1,0.313241,89.1140,0.485280,84.9300,6.10
+24,0.1,0.310810,89.0340,0.464144,84.6200,6.10
+25,0.1,0.296891,89.7400,0.549965,83.1600,6.29
+26,0.1,0.296839,89.6580,0.469977,85.0700,6.24
+27,0.1,0.290087,89.8780,0.476732,84.5800,6.02
+28,0.1,0.286536,90.0060,0.483504,84.8300,6.08
+29,0.1,0.279795,90.3660,0.495387,84.7100,5.89
+30,0.1,0.279874,90.2260,0.477231,84.6300,6.12
+31,0.1,0.278369,90.3300,0.449607,85.5300,6.00
+32,0.1,0.268183,90.7360,0.449695,85.5700,6.17
+33,0.1,0.265770,90.7720,0.441743,86.1000,6.08
+34,0.1,0.264202,90.8080,0.419218,86.6400,6.24
+35,0.1,0.261886,90.8600,0.457455,85.2800,6.10
+36,0.1,0.256277,91.1240,0.455098,85.7200,6.24
+37,0.1,0.255609,91.0760,0.424165,86.3500,6.10
+38,0.1,0.254923,91.0180,0.430543,85.9700,6.08
+39,0.1,0.249569,91.3940,0.408988,86.8900,6.24
+40,0.1,0.249205,91.3060,0.418565,86.8300,6.19
+41,0.1,0.244435,91.4880,0.382454,87.8700,6.14
+42,0.1,0.244554,91.4560,0.399786,87.1900,6.27
+43,0.1,0.239043,91.7080,0.408407,86.5300,6.05
+44,0.1,0.241712,91.6320,0.422731,86.7700,6.19
+45,0.1,0.231202,91.8200,0.384267,87.6200,6.13
+46,0.1,0.231871,91.8840,0.442005,86.0200,6.13
+47,0.1,0.229455,91.9640,0.507031,84.9300,6.13
+48,0.1,0.232645,91.8820,0.491336,84.7400,6.14
+49,0.1,0.224854,92.1020,0.434670,86.4400,6.18
+50,0.1,0.222086,92.2280,0.484567,84.9000,6.38
+51,0.1,0.226636,92.0940,0.444104,85.7100,6.05
+52,0.1,0.219851,92.2380,0.482041,85.4500,6.08
+53,0.1,0.225181,92.1360,0.442763,86.4700,6.10
+54,0.1,0.224900,92.1360,0.421185,87.1800,6.16
+55,0.1,0.217391,92.4000,0.390775,87.3100,6.04
+56,0.1,0.218023,92.3640,0.389302,87.4700,6.17
+57,0.1,0.212324,92.5620,0.368524,88.2400,6.00
+58,0.1,0.220142,92.2640,0.424963,86.9400,6.22
+59,0.1,0.214749,92.2340,0.463231,86.2700,6.31
+60,0.1,0.217334,92.3540,0.444561,86.4000,6.17
+61,0.1,0.211562,92.6240,0.446645,86.4600,6.23
+62,0.1,0.210884,92.5260,0.562587,83.9700,6.16
+63,0.1,0.210757,92.5380,0.474049,85.5600,6.09
+64,0.1,0.203027,92.9040,0.382069,88.3600,6.16
+65,0.1,0.202986,92.8960,0.404048,87.8200,6.21
+66,0.1,0.204299,92.8840,0.400709,87.3100,7.02
+67,0.1,0.205621,92.8540,0.405778,87.1300,6.31
+68,0.1,0.198528,93.0680,0.394952,87.7700,10.39
+69,0.1,0.203000,92.8640,0.439650,86.7000,6.13
+70,0.1,0.204611,92.8840,0.396601,88.1100,6.18
+71,0.1,0.202571,92.9480,0.409124,87.4700,6.22
+72,0.1,0.201233,92.9420,0.427435,87.7400,6.14
+73,0.1,0.202649,92.9520,0.450041,86.5500,6.15
+74,0.1,0.197547,93.1280,0.457281,86.2100,6.19
+75,0.1,0.199020,93.0500,0.449487,86.9600,6.10
+76,0.1,0.194912,93.2420,0.554735,84.4600,6.15
+77,0.1,0.189545,93.3480,0.377337,88.4800,6.45
+78,0.1,0.196243,93.0500,0.392070,88.0800,6.12
+79,0.1,0.192759,93.2800,0.398308,87.6600,6.21
+80,0.1,0.196052,93.1300,0.409175,87.7300,6.12
+81,0.1,0.192277,93.3380,0.374083,88.3600,6.08
+82,0.1,0.188462,93.4260,0.478558,86.1000,6.23
+83,0.1,0.193742,93.2880,0.422704,87.0400,6.24
+84,0.1,0.200214,92.9000,0.363842,88.2400,6.24
+85,0.1,0.190258,93.3420,0.655865,82.3100,6.52
+86,0.1,0.190249,93.2180,0.387137,87.8500,6.15
+87,0.1,0.191282,93.1460,0.451634,86.9900,6.21
+88,0.1,0.194451,93.1320,0.374091,88.6700,6.28
+89,0.1,0.188470,93.3820,0.461479,86.2900,5.57
+90,0.1,0.183655,93.5280,0.469931,85.9300,4.76
+91,0.1,0.188316,93.4540,0.387578,88.4000,4.81
+92,0.1,0.180190,93.7140,0.440565,86.6700,4.90
+93,0.1,0.187656,93.5340,0.375553,88.6000,4.71
+94,0.1,0.184211,93.6080,0.423097,86.6400,4.77
+95,0.1,0.190653,93.3740,0.468154,86.0500,4.76
+96,0.1,0.184700,93.4860,0.462439,86.0500,4.68
+97,0.1,0.183977,93.4760,0.429570,87.0200,4.82
+98,0.1,0.187434,93.4780,0.506181,85.2000,4.86
+99,0.1,0.185643,93.6640,0.493922,85.2500,4.85
+100,0.1,0.183248,93.4560,0.391886,88.3800,4.85
+101,0.010000000000000002,0.103167,96.5180,0.258720,91.9300,4.75
+102,0.010000000000000002,0.076085,97.4400,0.257445,91.9700,4.85
+103,0.010000000000000002,0.065558,97.8620,0.262370,92.2600,4.74
+104,0.010000000000000002,0.059900,98.0140,0.260199,92.3200,4.72
+105,0.010000000000000002,0.052555,98.3460,0.263150,92.2400,4.67
+106,0.010000000000000002,0.049945,98.4020,0.263765,92.1800,4.79
+107,0.010000000000000002,0.046388,98.5200,0.266411,92.3300,4.82
+108,0.010000000000000002,0.045414,98.5820,0.268937,92.3800,4.71
+109,0.010000000000000002,0.040418,98.6900,0.267643,92.3300,4.82
+110,0.010000000000000002,0.038624,98.7520,0.277884,92.1300,4.88
+111,0.010000000000000002,0.036718,98.8300,0.275219,92.3500,4.83
+112,0.010000000000000002,0.034461,98.9120,0.276688,92.4300,4.82
+113,0.010000000000000002,0.033422,98.9860,0.276269,92.4700,4.74
+114,0.010000000000000002,0.030839,99.0580,0.282503,92.5000,4.82
+115,0.010000000000000002,0.030836,99.0220,0.287130,92.4100,4.82
+116,0.010000000000000002,0.027789,99.2000,0.286905,92.4800,4.80
+117,0.010000000000000002,0.026935,99.1460,0.289906,92.3900,4.93
+118,0.010000000000000002,0.026093,99.1960,0.295469,92.5200,4.77
+119,0.010000000000000002,0.025447,99.2160,0.296411,92.4200,4.79
+120,0.010000000000000002,0.024710,99.2400,0.294372,92.5900,4.83
+121,0.010000000000000002,0.024861,99.1980,0.296736,92.7000,4.89
+122,0.010000000000000002,0.022975,99.2980,0.299099,92.3700,4.75
+123,0.010000000000000002,0.022126,99.3600,0.304626,92.3100,4.73
+124,0.010000000000000002,0.021784,99.3360,0.304291,92.3900,4.90
+125,0.010000000000000002,0.019843,99.4020,0.306449,92.4600,5.31
+126,0.010000000000000002,0.019823,99.4480,0.303070,92.5600,4.75
+127,0.010000000000000002,0.019193,99.4380,0.314579,92.3600,4.67
+128,0.010000000000000002,0.018082,99.4620,0.311859,92.2300,4.89
+129,0.010000000000000002,0.017844,99.4740,0.310865,92.4500,4.82
+130,0.010000000000000002,0.018101,99.4900,0.314240,92.2900,4.82
+131,0.010000000000000002,0.016785,99.5600,0.317347,92.3900,4.82
+132,0.010000000000000002,0.016845,99.5360,0.315556,92.4700,4.76
+133,0.010000000000000002,0.015880,99.5800,0.312356,92.6300,4.76
+134,0.010000000000000002,0.016398,99.5460,0.322328,92.5400,4.68
+135,0.010000000000000002,0.015636,99.5740,0.321598,92.3700,4.73
+136,0.010000000000000002,0.015157,99.5740,0.320742,92.5800,4.81
+137,0.010000000000000002,0.015317,99.5880,0.321410,92.5700,4.76
+138,0.010000000000000002,0.014935,99.5880,0.319227,92.6600,4.69
+139,0.010000000000000002,0.015234,99.5680,0.310035,92.6200,5.20
+140,0.010000000000000002,0.014181,99.6140,0.319162,92.4800,4.87
+141,0.010000000000000002,0.013906,99.6080,0.320076,92.5600,4.91
+142,0.010000000000000002,0.014107,99.6060,0.330058,92.5200,4.72
+143,0.010000000000000002,0.014198,99.5920,0.329554,92.5500,4.89
+144,0.010000000000000002,0.013219,99.6400,0.323915,92.6000,5.02
+145,0.010000000000000002,0.013588,99.6020,0.342582,92.4800,4.95
+146,0.010000000000000002,0.013842,99.6020,0.339667,92.5000,4.97
+147,0.010000000000000002,0.011942,99.6840,0.336843,92.3500,4.78
+148,0.010000000000000002,0.012559,99.6480,0.328783,92.6400,4.79
+149,0.010000000000000002,0.011737,99.6720,0.333825,92.3800,4.87
+150,0.010000000000000002,0.012106,99.6780,0.336358,92.6100,4.80
+151,0.0010000000000000002,0.010602,99.7180,0.328945,92.5800,4.87
+152,0.0010000000000000002,0.010357,99.7420,0.329436,92.7100,4.85
+153,0.0010000000000000002,0.009255,99.7660,0.325051,92.7300,4.80
+154,0.0010000000000000002,0.009203,99.7660,0.326672,92.6600,4.79
+155,0.0010000000000000002,0.008570,99.7920,0.326463,92.6200,4.78
+156,0.0010000000000000002,0.007698,99.8300,0.324778,92.6200,4.77
+157,0.0010000000000000002,0.008976,99.7720,0.325095,92.6800,4.87
+158,0.0010000000000000002,0.008606,99.8000,0.324072,92.5400,4.81
+159,0.0010000000000000002,0.007980,99.8200,0.326086,92.7900,4.76
+160,0.0010000000000000002,0.007490,99.8440,0.326895,92.6400,4.74
+161,0.0010000000000000002,0.007730,99.8200,0.320590,92.7700,4.81
+162,0.0010000000000000002,0.007508,99.8480,0.322757,92.7700,4.73
+163,0.0010000000000000002,0.007729,99.8300,0.323825,92.6700,4.86
+164,0.0010000000000000002,0.007952,99.8240,0.323081,92.7600,4.87
+165,0.0010000000000000002,0.008167,99.8140,0.323189,92.6900,4.81
+166,0.0010000000000000002,0.008211,99.7780,0.326033,92.6500,4.74
+167,0.0010000000000000002,0.007727,99.8320,0.324213,92.6100,4.66
+168,0.0010000000000000002,0.007580,99.8320,0.326839,92.6600,4.70
+169,0.0010000000000000002,0.007767,99.8320,0.325389,92.7000,4.85
+170,0.0010000000000000002,0.007328,99.8400,0.322610,92.7100,4.76
+171,0.0010000000000000002,0.007655,99.8380,0.323025,92.7100,4.80
+172,0.0010000000000000002,0.007114,99.8460,0.323645,92.6400,4.84
+173,0.0010000000000000002,0.007298,99.8280,0.326647,92.7400,4.79
+174,0.0010000000000000002,0.007517,99.8480,0.322679,92.7600,4.75
+175,0.0010000000000000002,0.007364,99.8560,0.323096,92.7400,4.81
+176,0.0010000000000000002,0.007190,99.8620,0.327550,92.5700,4.80
+177,0.0010000000000000002,0.006836,99.8660,0.324081,92.8000,4.70
+178,0.0010000000000000002,0.006755,99.8740,0.324696,92.7900,4.75
+179,0.0010000000000000002,0.007087,99.8460,0.325933,92.8100,4.83
+180,0.0010000000000000002,0.006726,99.8780,0.326750,92.7400,4.76
+181,0.0010000000000000002,0.007103,99.8560,0.328492,92.7300,4.79
+182,0.0010000000000000002,0.006773,99.8680,0.326427,92.8400,4.77
+183,0.0010000000000000002,0.006896,99.8520,0.325000,92.6800,4.80
+184,0.0010000000000000002,0.006958,99.8680,0.325382,92.7300,4.79
+185,0.0010000000000000002,0.007153,99.8500,0.324756,92.8200,4.78
+186,0.0010000000000000002,0.007028,99.8600,0.325957,92.7800,4.78
+187,0.0010000000000000002,0.006274,99.8740,0.326735,92.7000,4.83
+188,0.0010000000000000002,0.007154,99.8360,0.331019,92.6900,4.85
+189,0.0010000000000000002,0.006680,99.8920,0.326585,92.6900,4.73
+190,0.0010000000000000002,0.006880,99.8460,0.328673,92.5300,4.83
+191,0.0010000000000000002,0.006994,99.8540,0.327328,92.7400,4.77
+192,0.0010000000000000002,0.006646,99.8680,0.326563,92.7400,4.74
+193,0.0010000000000000002,0.007148,99.8340,0.325905,92.7200,4.77
+194,0.0010000000000000002,0.006816,99.8720,0.322765,92.8400,4.82
+195,0.0010000000000000002,0.006273,99.8820,0.328552,92.7300,4.77
+196,0.0010000000000000002,0.006419,99.9020,0.325315,92.8300,4.71
+197,0.0010000000000000002,0.006628,99.8620,0.328863,92.7200,4.75
+198,0.0010000000000000002,0.006721,99.8820,0.325036,92.7900,4.77
+199,0.0010000000000000002,0.006519,99.8600,0.324854,92.8100,4.82
+200,0.0010000000000000002,0.006242,99.9000,0.325050,92.8300,4.71
+1,0.1,1.696698,37.0360,1.381926,50.3900,11.79
+2,0.1,1.160721,58.3740,1.154622,60.9800,8.26
+3,0.1,0.927755,67.0000,1.239765,60.3500,8.17
+4,0.1,0.786431,72.4500,0.923753,68.7800,7.60
+5,0.1,0.677301,76.3800,0.798169,74.1600,7.34
+6,0.1,0.604112,79.0960,0.910772,72.0100,8.84
+7,0.1,0.553148,80.9580,0.634651,78.9100,7.76
+8,0.1,0.521137,81.9520,0.838531,74.4400,6.75
+9,0.1,0.487580,83.0940,0.554171,81.1800,6.73
+10,0.1,0.458191,84.1060,0.614671,80.3600,6.51
+11,0.1,0.434695,84.9980,0.486723,83.6100,6.74
+12,0.1,0.425147,85.2840,0.575263,81.3400,6.66
+13,0.1,0.406259,86.0180,0.475073,84.1000,6.74
+14,0.1,0.388053,86.5040,0.526406,83.3300,6.80
+15,0.1,0.372711,87.0700,0.521970,82.3300,6.75
+16,0.1,0.369297,87.1300,0.484960,84.0300,6.70
+17,0.1,0.353859,87.6980,0.511442,83.5600,6.72
+18,0.1,0.350867,87.7080,0.537314,82.4300,6.64
+19,0.1,0.336527,88.3280,0.500915,84.2100,6.74
+20,0.1,0.327398,88.7080,0.487821,84.9300,6.68
+21,0.1,0.320724,88.8000,0.528887,83.4800,6.64
+22,0.1,0.319281,88.8900,0.599121,80.9700,6.75
+23,0.1,0.307039,89.3120,0.464439,85.1400,6.69
+24,0.1,0.301980,89.3780,0.415864,86.3300,6.65
+25,0.1,0.294342,89.6680,0.451481,85.4100,6.72
+26,0.1,0.288380,89.9280,0.482499,84.6100,6.78
+27,0.1,0.291155,89.8980,0.487603,84.6400,6.67
+28,0.1,0.279983,90.3400,0.436947,85.2200,6.80
+29,0.1,0.276789,90.2920,0.459510,85.5300,6.76
+30,0.1,0.272770,90.5680,0.592818,81.2300,6.73
+31,0.1,0.269998,90.5620,0.458509,85.8400,6.70
+32,0.1,0.268386,90.7260,0.420005,86.3300,6.60
+33,0.1,0.261197,90.9820,0.416108,86.5500,6.71
+34,0.1,0.260394,90.8900,0.394381,87.1200,6.77
+35,0.1,0.253992,91.0920,0.502686,84.5900,6.65
+36,0.1,0.250261,91.2920,0.421554,86.7100,6.59
+37,0.1,0.250422,91.2820,0.543903,83.2500,6.67
+38,0.1,0.244065,91.5260,0.487666,84.8300,6.59
+39,0.1,0.248388,91.3620,0.416637,86.9500,6.69
+40,0.1,0.240028,91.7200,0.513771,84.2100,6.72
+41,0.1,0.236401,91.6880,0.487467,85.1900,6.66
+42,0.1,0.234178,91.7100,0.440483,86.8000,6.78
+43,0.1,0.236344,91.7080,0.403265,87.6600,6.63
+44,0.1,0.235956,91.7260,0.623546,82.6300,6.62
+45,0.1,0.232830,91.7440,0.486169,84.5900,6.73
+46,0.1,0.226116,92.0760,0.536070,84.0700,6.69
+47,0.1,0.230173,92.0560,0.626893,83.4300,6.70
+48,0.1,0.228435,91.9360,0.604705,82.9600,6.83
+49,0.1,0.228885,91.9400,0.459512,85.9000,6.54
+50,0.1,0.221898,92.1880,0.426134,86.6400,6.91
+51,0.1,0.221877,92.1200,0.446395,86.2400,6.74
+52,0.1,0.216811,92.3540,0.578738,83.1800,6.60
+53,0.1,0.217202,92.3940,0.375783,87.9500,6.86
+54,0.1,0.211927,92.6420,0.394128,87.7900,6.15
+55,0.1,0.218375,92.3380,0.508160,85.6500,4.81
+56,0.1,0.214531,92.5260,0.453306,85.9500,4.77
+57,0.1,0.207198,92.8080,0.419636,87.2300,4.79
+58,0.1,0.209141,92.6420,0.414899,86.8300,4.78
+59,0.1,0.210479,92.5740,0.483624,85.9000,4.72
+60,0.1,0.213655,92.4960,0.419510,86.7100,4.82
+61,0.1,0.206856,92.7640,0.459618,85.6800,5.59
+62,0.1,0.205137,92.7500,0.472125,86.2700,5.90
+63,0.1,0.213055,92.5520,0.510100,84.9400,5.68
+64,0.1,0.197390,93.0640,0.419403,87.0400,4.75
+65,0.1,0.199921,92.8380,0.527492,84.7600,4.86
+66,0.1,0.207656,92.7580,0.405174,87.8500,4.82
+67,0.1,0.204293,92.7960,0.398761,87.5500,4.73
+68,0.1,0.199715,93.0200,0.429825,87.3200,4.83
+69,0.1,0.202059,92.8700,0.518341,85.0200,4.70
+70,0.1,0.201004,92.9600,0.480306,85.7900,4.85
+71,0.1,0.197097,93.0540,0.412323,87.7900,4.78
+72,0.1,0.198473,92.9680,0.495405,85.7000,4.74
+73,0.1,0.194522,93.1240,0.466918,86.5500,5.08
+74,0.1,0.194336,93.1900,0.442274,86.1200,5.17
+75,0.1,0.199678,92.9660,0.403205,87.7500,4.83
+76,0.1,0.196073,93.1460,0.488897,86.1100,5.05
+77,0.1,0.193328,93.1740,0.459177,86.2300,4.90
+78,0.1,0.191693,93.2340,0.464574,86.6900,5.08
+79,0.1,0.193964,93.1440,0.410164,87.4300,5.01
+80,0.1,0.188504,93.4520,0.424388,87.2900,4.73
+81,0.1,0.192091,93.2520,0.359338,88.4800,5.07
+82,0.1,0.191535,93.3060,0.442812,86.6000,5.06
+83,0.1,0.193994,93.1520,0.474466,86.8300,5.01
+84,0.1,0.188792,93.3640,0.463792,86.4100,5.21
+85,0.1,0.190393,93.3740,0.712598,81.5100,5.23
+86,0.1,0.189684,93.2040,0.415830,87.3100,5.24
+87,0.1,0.189382,93.4000,0.477633,86.6500,5.49
+88,0.1,0.189819,93.3300,0.405975,87.9600,5.42
+89,0.1,0.181833,93.7220,0.402158,87.3500,5.94
+90,0.1,0.186199,93.4240,0.409881,87.4700,5.78
+91,0.1,0.187464,93.3460,0.398032,87.3300,5.57
+92,0.1,0.182047,93.6260,0.564561,84.1800,5.67
+93,0.1,0.183611,93.4700,0.551733,84.5100,5.64
+94,0.1,0.185052,93.4140,0.474255,86.4000,5.56
+95,0.1,0.180923,93.6840,0.531116,85.6700,5.94
+96,0.1,0.183397,93.6220,0.486011,86.4400,5.81
+97,0.1,0.183165,93.6640,0.404185,87.8600,5.92
+98,0.1,0.183963,93.5940,0.463222,86.2500,5.90
+99,0.1,0.180819,93.6920,0.359694,88.9900,5.81
+100,0.1,0.179581,93.6340,0.476382,86.1400,5.91
+101,0.010000000000000002,0.100577,96.6380,0.261308,92.0500,5.56
+102,0.010000000000000002,0.074286,97.5440,0.260410,92.2600,5.92
+103,0.010000000000000002,0.064099,97.9220,0.259887,92.4400,5.77
+104,0.010000000000000002,0.057335,98.1480,0.264616,92.3200,5.74
+105,0.010000000000000002,0.050745,98.4340,0.265083,92.4100,4.76
+106,0.010000000000000002,0.047812,98.5220,0.271779,92.3800,4.80
+107,0.010000000000000002,0.045606,98.5360,0.270616,92.3100,4.74
+108,0.010000000000000002,0.042458,98.6320,0.268574,92.5700,4.79
+109,0.010000000000000002,0.039507,98.7400,0.274655,92.5100,4.74
+110,0.010000000000000002,0.037851,98.8140,0.283957,92.4200,4.73
+111,0.010000000000000002,0.034852,98.9060,0.277327,92.6600,4.89
+112,0.010000000000000002,0.033129,98.9500,0.277455,92.6000,4.83
+113,0.010000000000000002,0.031615,99.0280,0.284199,92.5900,4.73
+114,0.010000000000000002,0.029917,99.0380,0.282741,92.5700,4.76
+115,0.010000000000000002,0.029178,99.0900,0.296102,92.6700,4.79
+116,0.010000000000000002,0.027786,99.1940,0.293116,92.7300,5.01
+117,0.010000000000000002,0.026750,99.2160,0.301392,92.6200,5.76
+118,0.010000000000000002,0.025405,99.2240,0.298649,92.5900,5.61
+119,0.010000000000000002,0.023938,99.2840,0.296824,92.4600,6.14
+120,0.010000000000000002,0.025446,99.2060,0.301797,92.6400,6.01
+121,0.010000000000000002,0.022447,99.3320,0.305917,92.5400,5.89
+122,0.010000000000000002,0.022585,99.3180,0.302393,92.4600,6.48
+123,0.010000000000000002,0.021884,99.3300,0.308629,92.7100,6.03
+124,0.010000000000000002,0.019892,99.4500,0.307353,92.6900,6.17
+125,0.010000000000000002,0.020474,99.3780,0.307898,92.6600,6.09
+126,0.010000000000000002,0.019777,99.4380,0.308220,92.6900,6.22
+127,0.010000000000000002,0.018591,99.4560,0.310951,92.7000,5.90
+128,0.010000000000000002,0.019143,99.4280,0.310972,92.7400,6.01
+129,0.010000000000000002,0.017866,99.4980,0.318197,92.4800,6.24
+130,0.010000000000000002,0.017452,99.4620,0.318797,92.5800,6.30
+131,0.010000000000000002,0.017637,99.5020,0.327435,92.4900,6.06
+132,0.010000000000000002,0.016843,99.5300,0.317525,92.8700,6.15
+133,0.010000000000000002,0.017070,99.4920,0.316011,93.0000,6.29
+134,0.010000000000000002,0.015368,99.5760,0.323680,92.5200,6.26
+135,0.010000000000000002,0.015361,99.5660,0.319931,92.7200,6.15
+136,0.010000000000000002,0.014461,99.6100,0.317508,92.6800,6.03
+137,0.010000000000000002,0.015396,99.5640,0.321532,92.4900,6.18
+138,0.010000000000000002,0.014078,99.6180,0.334542,92.5000,6.42
+139,0.010000000000000002,0.013981,99.5960,0.324994,92.5800,6.24
+140,0.010000000000000002,0.013770,99.6480,0.327223,92.6800,6.20
+141,0.010000000000000002,0.013014,99.6480,0.326414,92.5600,6.28
+142,0.010000000000000002,0.013616,99.6140,0.324801,92.6000,6.46
+143,0.010000000000000002,0.013334,99.6560,0.327696,92.6000,6.08
+144,0.010000000000000002,0.012291,99.6800,0.323725,92.5900,6.00
+145,0.010000000000000002,0.012828,99.6200,0.331892,92.5600,6.15
+146,0.010000000000000002,0.012199,99.6700,0.334618,92.4600,6.49
+147,0.010000000000000002,0.011976,99.6780,0.338554,92.6400,6.05
+148,0.010000000000000002,0.012636,99.6600,0.325832,92.8300,6.14
+149,0.010000000000000002,0.011209,99.6920,0.327646,92.7500,6.10
+150,0.010000000000000002,0.012001,99.6560,0.334871,92.6700,6.30
+151,0.0010000000000000002,0.010742,99.7000,0.328162,92.6900,6.11
+152,0.0010000000000000002,0.009794,99.7520,0.330782,92.8600,6.16
+153,0.0010000000000000002,0.009409,99.7760,0.326254,92.9200,6.11
+154,0.0010000000000000002,0.009126,99.7860,0.328403,92.8400,6.31
+155,0.0010000000000000002,0.008126,99.8180,0.328077,92.9500,6.13
+156,0.0010000000000000002,0.008184,99.8180,0.328408,92.7100,6.25
+157,0.0010000000000000002,0.008230,99.8340,0.327017,92.8800,6.23
+158,0.0010000000000000002,0.007900,99.8360,0.326736,92.8500,6.26
+159,0.0010000000000000002,0.008379,99.8040,0.332112,92.7000,6.32
+160,0.0010000000000000002,0.007543,99.8580,0.328231,92.7800,6.29
+161,0.0010000000000000002,0.007995,99.8060,0.325505,92.7900,6.06
+162,0.0010000000000000002,0.007761,99.8280,0.324877,92.9300,6.33
+163,0.0010000000000000002,0.007649,99.8280,0.331632,92.8300,6.46
+164,0.0010000000000000002,0.007353,99.8680,0.326391,92.8900,6.23
+165,0.0010000000000000002,0.008023,99.8260,0.326418,92.8900,6.09
+166,0.0010000000000000002,0.007949,99.8240,0.325769,92.7800,6.35
+167,0.0010000000000000002,0.007577,99.8360,0.322525,92.8900,6.19
+168,0.0010000000000000002,0.007472,99.8480,0.329891,92.9100,6.27
+169,0.0010000000000000002,0.007802,99.8380,0.328974,92.8300,6.19
+170,0.0010000000000000002,0.007715,99.8340,0.325744,92.9300,6.34
+171,0.0010000000000000002,0.007587,99.8340,0.326323,92.8400,6.09
+172,0.0010000000000000002,0.007005,99.8700,0.326591,92.7700,5.96
+173,0.0010000000000000002,0.007298,99.8660,0.328684,92.8100,6.03
+174,0.0010000000000000002,0.007277,99.8440,0.327540,92.8400,6.20
+175,0.0010000000000000002,0.007494,99.8420,0.326137,92.8300,6.17
+176,0.0010000000000000002,0.007230,99.8340,0.329193,92.8000,5.98
+177,0.0010000000000000002,0.006858,99.8680,0.329094,92.8600,6.12
+178,0.0010000000000000002,0.007079,99.8720,0.329395,92.8000,6.38
+179,0.0010000000000000002,0.006732,99.8740,0.329307,92.7400,6.06
+180,0.0010000000000000002,0.007108,99.8580,0.329700,92.8400,6.11
+181,0.0010000000000000002,0.007430,99.8340,0.328759,92.8100,6.06
+182,0.0010000000000000002,0.006856,99.8720,0.329502,92.8000,6.17
+183,0.0010000000000000002,0.006949,99.8460,0.328793,92.7900,6.21
+184,0.0010000000000000002,0.006511,99.8840,0.328628,92.8800,6.07
+185,0.0010000000000000002,0.006693,99.8620,0.332108,92.7900,6.24
+186,0.0010000000000000002,0.007245,99.8460,0.328501,92.7900,6.27
+187,0.0010000000000000002,0.006222,99.8960,0.329059,92.8500,6.25
+188,0.0010000000000000002,0.006886,99.8720,0.332430,92.8400,6.05
+189,0.0010000000000000002,0.006746,99.8880,0.331658,92.7800,6.13
+190,0.0010000000000000002,0.006761,99.8480,0.331319,92.7800,6.43
+191,0.0010000000000000002,0.007226,99.8620,0.330599,92.7900,6.30
+192,0.0010000000000000002,0.006912,99.8620,0.327310,92.7800,6.25
+193,0.0010000000000000002,0.007011,99.8500,0.332661,92.8200,6.40
+194,0.0010000000000000002,0.006710,99.8740,0.328742,92.8100,6.74
+195,0.0010000000000000002,0.006787,99.8660,0.332822,92.8000,6.75
+196,0.0010000000000000002,0.006847,99.8560,0.331921,92.7800,6.29
+197,0.0010000000000000002,0.006606,99.8600,0.332298,92.8000,5.96
+198,0.0010000000000000002,0.006392,99.8700,0.331177,92.8200,6.45
+199,0.0010000000000000002,0.006343,99.8580,0.330713,92.8600,6.20
+200,0.0010000000000000002,0.006150,99.8980,0.328908,92.9900,6.22
+
+
+
+================================================
+FILE: runs/resnet32_baseline/summary.json
+================================================
+{
+  "run_name": "resnet32_baseline",
+  "model": "ResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    16,
+    32,
+    64
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 200,
+  "best_acc": 93.0,
+  "best_epoch": 133,
+  "params": 464154,
+  "flops": 68862592,
+  "total_train_time_sec": 1218.934302330017,
+  "checkpoint_best": "runs/resnet32_baseline/best.pt",
+  "checkpoint_last": "runs/resnet32_baseline/last.pt"
+}
+
+
+================================================
+FILE: runs/resnet32_quick/best.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/resnet32_quick/last.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/resnet32_quick/metrics.csv
+================================================
+epoch,lr,train_loss,train_acc,test_loss,test_acc,epoch_time_sec
+1,0.05,1.641107,39.0340,1.407419,50.8900,5.03
+2,0.005000000000000001,1.109446,59.6900,1.037195,62.6100,4.48
+1,0.05,1.658041,38.1480,1.414236,48.7900,9.56
+2,0.005000000000000001,1.116596,59.3360,1.052225,62.2900,8.00
+
+
+
+================================================
+FILE: runs/resnet32_quick/summary.json
+================================================
+{
+  "run_name": "resnet32_quick",
+  "model": "ResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    16,
+    32,
+    64
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 2,
+  "best_acc": 62.29,
+  "best_epoch": 2,
+  "params": 464154,
+  "flops": 68862592,
+  "total_train_time_sec": 17.64383029937744,
+  "checkpoint_best": "runs/resnet32_quick/best.pt",
+  "checkpoint_last": "runs/resnet32_quick/last.pt"
+}
+
+
+================================================
+FILE: scripts/run_full.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python train_resnet32.py \
+  --run-name resnet32_baseline \
+  --epochs 200 \
+  --batch-size 128 \
+  --lr 0.1 \
+  --milestones 100,150 \
+  --amp
+
+
+
+================================================
+FILE: scripts/run_quick.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python model_info.py
+python train_resnet32.py --epochs 2 --batch-size 128 --lr 0.05 --milestones 1 --run-name resnet32_quick
+
+
+
+================================================
+FILE: scripts/run_search_full.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python search_channels_ga_pso.py \
+  --algorithm both \
+  --search-epochs 3 \
+  --ga-population 8 \
+  --ga-generations 5 \
+  --pso-particles 8 \
+  --pso-iterations 5 \
+  --max-train-samples 5000 \
+  --max-test-samples 2000 \
+  --amp
+
+
+
+================================================
+FILE: scripts/run_search_quick.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python search_channels_ga_pso.py \
+  --algorithm both \
+  --search-epochs 1 \
+  --ga-population 4 \
+  --ga-generations 2 \
+  --pso-particles 4 \
+  --pso-iterations 2 \
+  --max-train-samples 1000 \
+  --max-test-samples 500
+
+
+
+================================================
+FILE: scripts/run_search_quick_windows.ps1
+================================================
+python search_channels_ga_pso.py `
+  --algorithm both `
+  --search-epochs 1 `
+  --ga-population 4 `
+  --ga-generations 2 `
+  --pso-particles 4 `
+  --pso-iterations 2 `
+  --max-train-samples 1000 `
+  --max-test-samples 500
+
+
+
+================================================
+FILE: scripts/run_train_width_example.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python train_width_resnet32.py \
+  --channels 16,24,48 \
+  --run-name final_width_16-24-48 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --amp
+
+
+
+================================================
+FILE: scripts/run_windows.ps1
+================================================
+python model_info.py
+python train_resnet32.py `
+  --run-name resnet32_baseline `
+  --epochs 200 `
+  --batch-size 128 `
+  --lr 0.1 `
+  --milestones 100,150 `
+  --amp
+
+
+
+================================================
+FILE: src/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: src/data/__init__.py
+================================================
+from .cifar10 import get_cifar10_loaders, get_cifar10_test_loader
+
+__all__ = ["get_cifar10_loaders", "get_cifar10_test_loader"]
+
+
+
+================================================
+FILE: src/data/cifar10.py
+================================================
+from __future__ import annotations
+
+import random
+from typing import Optional
+
+import torch
+import torchvision
+import torchvision.transforms as transforms
+
+
+def _subset(dataset, max_samples: int | None, seed: int):
+    if max_samples is None or max_samples <= 0 or max_samples >= len(dataset):
+        return dataset
+    rng = random.Random(seed)
+    indices = list(range(len(dataset)))
+    rng.shuffle(indices)
+    return torch.utils.data.Subset(dataset, indices[:max_samples])
+
+
+def get_cifar10_loaders(
+    data_dir: str = "data",
+    batch_size: int = 128,
+    num_workers: int = 2,
+    max_train_samples: Optional[int] = None,
+    max_test_samples: Optional[int] = None,
+    seed: int = 42,
+):
+    mean = (0.4914, 0.4822, 0.4465)
+    std = (0.2023, 0.1994, 0.2010)
+
+    train_transform = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
+
+    train_set = torchvision.datasets.CIFAR10(
+        root=data_dir,
+        train=True,
+        download=True,
+        transform=train_transform,
+    )
+    test_set = torchvision.datasets.CIFAR10(
+        root=data_dir,
+        train=False,
+        download=True,
+        transform=test_transform,
+    )
+
+    train_set = _subset(train_set, max_train_samples, seed)
+    test_set = _subset(test_set, max_test_samples, seed + 10000)
+
+    train_loader = torch.utils.data.DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    return train_loader, test_loader
+
+
+def get_cifar10_test_loader(
+    data_dir: str = "data",
+    batch_size: int = 256,
+    num_workers: int = 2,
+    max_test_samples: Optional[int] = None,
+    seed: int = 42,
+):
+    mean = (0.4914, 0.4822, 0.4465)
+    std = (0.2023, 0.1994, 0.2010)
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
+    test_set = torchvision.datasets.CIFAR10(
+        root=data_dir,
+        train=False,
+        download=True,
+        transform=transform,
+    )
+    test_set = _subset(test_set, max_test_samples, seed + 10000)
+    return torch.utils.data.DataLoader(
+        test_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+
+
+
+================================================
+FILE: src/models/__init__.py
+================================================
+from .resnet32_cifar import ResNet32, resnet32
+from .resnet32_width import WidthResNet32, width_resnet32
+
+__all__ = ["ResNet32", "resnet32", "WidthResNet32", "width_resnet32"]
+
+
+
+================================================
+FILE: src/models/resnet32_cifar.py
+================================================
+"""Standard CIFAR-10 ResNet32.
+
+This file intentionally contains only ResNet32.
+No width scaling, no compressed variants, no ResNet20/44/56/110.
+
+CIFAR ResNet depth rule: depth = 6n + 2.
+For ResNet32, n = 5, so each of the three stages has 5 residual blocks.
+
+Architecture:
+    conv1: 3x3, 16 channels
+    stage1: 5 blocks, 16 channels
+    stage2: 5 blocks, 32 channels, first block stride=2
+    stage3: 5 blocks, 64 channels, first block stride=2
+    global average pooling
+    fc: 10 classes
+"""
+from __future__ import annotations
+
+from typing import Callable
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class LambdaLayer(nn.Module):
+    def __init__(self, lambd: Callable[[torch.Tensor], torch.Tensor]) -> None:
+        super().__init__()
+        self.lambd = lambd
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.lambd(x)
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes: int, planes: int, stride: int = 1) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            in_planes,
+            planes,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(
+            planes,
+            planes,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
+        )
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        if stride == 1 and in_planes == planes:
+            self.shortcut: nn.Module = nn.Identity()
+        else:
+            # Original CIFAR ResNet option A shortcut:
+            # downsample spatial size by strided slicing and pad channels with zeros.
+            # This adds no trainable parameters.
+            def option_a(x: torch.Tensor) -> torch.Tensor:
+                out = x[:, :, ::stride, ::stride]
+                channel_pad = planes - in_planes
+                if channel_pad > 0:
+                    left = channel_pad // 2
+                    right = channel_pad - left
+                    out = F.pad(out, (0, 0, 0, 0, left, right), "constant", 0)
+                return out
+
+            self.shortcut = LambdaLayer(option_a)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.bn2(self.conv2(out))
+        out = out + self.shortcut(x)
+        out = F.relu(out, inplace=True)
+        return out
+
+
+class ResNet32(nn.Module):
+    def __init__(self, num_classes: int = 10) -> None:
+        super().__init__()
+        self.in_planes = 16
+
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.layer1 = self._make_layer(planes=16, num_blocks=5, stride=1)
+        self.layer2 = self._make_layer(planes=32, num_blocks=5, stride=2)
+        self.layer3 = self._make_layer(planes=64, num_blocks=5, stride=2)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(64, num_classes)
+
+        self._init_weights()
+
+    def _make_layer(self, planes: int, num_blocks: int, stride: int) -> nn.Sequential:
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for current_stride in strides:
+            layers.append(BasicBlock(self.in_planes, planes, current_stride))
+            self.in_planes = planes * BasicBlock.expansion
+        return nn.Sequential(*layers)
+
+    def _init_weights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0.0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, mean=0.0, std=0.01)
+                nn.init.constant_(m.bias, 0.0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.avgpool(out)
+        out = torch.flatten(out, 1)
+        out = self.fc(out)
+        return out
+
+
+def resnet32(num_classes: int = 10) -> ResNet32:
+    return ResNet32(num_classes=num_classes)
+
+
+
+================================================
+FILE: src/models/resnet32_width.py
+================================================
+"""Variable-width CIFAR-10 ResNet32 used for channel-configuration search.
+
+Important: the topology is still ResNet32.
+- depth = 6n + 2 = 32
+- n = 5 residual blocks per stage
+- only the stage channel numbers are changed
+
+This is a stage-level structured channel compression model. It is intentionally
+simple and stable for coursework experiments before moving to true channel-index
+pruning based on BN-gamma or weight norms.
+"""
+from __future__ import annotations
+
+from typing import Callable, Sequence
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class LambdaLayer(nn.Module):
+    def __init__(self, lambd: Callable[[torch.Tensor], torch.Tensor]) -> None:
+        super().__init__()
+        self.lambd = lambd
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.lambd(x)
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes: int, planes: int, stride: int = 1) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            in_planes,
+            planes,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(
+            planes,
+            planes,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
+        )
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        if stride == 1 and in_planes == planes:
+            self.shortcut: nn.Module = nn.Identity()
+        else:
+            # CIFAR ResNet option A: downsample by slicing and pad channels.
+            # This remains parameter-free, matching the baseline implementation.
+            def option_a(x: torch.Tensor) -> torch.Tensor:
+                out = x[:, :, ::stride, ::stride]
+                channel_pad = planes - in_planes
+                if channel_pad > 0:
+                    left = channel_pad // 2
+                    right = channel_pad - left
+                    out = F.pad(out, (0, 0, 0, 0, left, right), "constant", 0)
+                elif channel_pad < 0:
+                    # This branch is not expected for the default monotonic search space,
+                    # but keeps the module robust for custom channel settings.
+                    keep = planes
+                    out = out[:, :keep, :, :]
+                return out
+
+            self.shortcut = LambdaLayer(option_a)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.bn2(self.conv2(out))
+        out = out + self.shortcut(x)
+        out = F.relu(out, inplace=True)
+        return out
+
+
+class WidthResNet32(nn.Module):
+    """CIFAR-10 ResNet32 with searchable stage channels.
+
+    Args:
+        stage_channels: three integers for stage1/stage2/stage3, e.g. [16, 24, 48].
+        num_classes: number of output classes.
+    """
+
+    def __init__(self, stage_channels: Sequence[int] = (16, 32, 64), num_classes: int = 10) -> None:
+        super().__init__()
+        if len(stage_channels) != 3:
+            raise ValueError("stage_channels must contain exactly 3 integers, e.g. [16, 32, 64].")
+        c1, c2, c3 = [int(c) for c in stage_channels]
+        if min(c1, c2, c3) <= 0:
+            raise ValueError("all stage channels must be positive.")
+
+        self.stage_channels = [c1, c2, c3]
+        self.blocks_per_stage = 5
+        self.in_planes = c1
+
+        self.conv1 = nn.Conv2d(3, c1, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(c1)
+        self.stage1 = self._make_layer(c1, num_blocks=5, stride=1)
+        self.stage2 = self._make_layer(c2, num_blocks=5, stride=2)
+        self.stage3 = self._make_layer(c3, num_blocks=5, stride=2)
+        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(c3, num_classes)
+
+        self._init_weights()
+
+    def _make_layer(self, planes: int, num_blocks: int, stride: int) -> nn.Sequential:
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(BasicBlock(self.in_planes, planes, s))
+            self.in_planes = planes * BasicBlock.expansion
+        return nn.Sequential(*layers)
+
+    def _init_weights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.stage1(out)
+        out = self.stage2(out)
+        out = self.stage3(out)
+        out = self.avg_pool(out)
+        out = torch.flatten(out, 1)
+        out = self.fc(out)
+        return out
+
+
+def width_resnet32(stage_channels: Sequence[int] = (16, 32, 64), num_classes: int = 10) -> WidthResNet32:
+    return WidthResNet32(stage_channels=stage_channels, num_classes=num_classes)
+
+
+
+================================================
+FILE: src/utils/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: src/utils/checkpoint.py
+================================================
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict
+
+import torch
+
+
+def save_checkpoint(path: str | Path, **kwargs: Any) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    torch.save(kwargs, path)
+
+
+def load_checkpoint(path: str | Path, map_location: str | torch.device = "cpu") -> Dict[str, Any]:
+    return torch.load(path, map_location=map_location)
+
+
+
+================================================
+FILE: src/utils/metrics.py
+================================================
+from __future__ import annotations
+
+from typing import Dict, Tuple
+
+import torch
+import torch.nn as nn
+
+
+class AverageMeter:
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.val = 0.0
+        self.avg = 0.0
+        self.sum = 0.0
+        self.count = 0
+
+    def update(self, val: float, n: int = 1) -> None:
+        self.val = float(val)
+        self.sum += float(val) * n
+        self.count += n
+        self.avg = self.sum / max(self.count, 1)
+
+
+@torch.no_grad()
+def accuracy(output: torch.Tensor, target: torch.Tensor, topk: Tuple[int, ...] = (1,)) -> list[torch.Tensor]:
+    maxk = max(topk)
+    batch_size = target.size(0)
+
+    _, pred = output.topk(maxk, dim=1, largest=True, sorted=True)
+    pred = pred.t()
+    correct = pred.eq(target.reshape(1, -1).expand_as(pred))
+
+    results = []
+    for k in topk:
+        correct_k = correct[:k].reshape(-1).float().sum(0)
+        results.append(correct_k.mul_(100.0 / batch_size))
+    return results
+
+
+def count_parameters(model: nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters())
+
+
+def human_number(n: float) -> str:
+    if abs(n) >= 1e9:
+        return f"{n / 1e9:.3f}G"
+    if abs(n) >= 1e6:
+        return f"{n / 1e6:.3f}M"
+    if abs(n) >= 1e3:
+        return f"{n / 1e3:.3f}K"
+    return f"{n:.0f}"
+
+
+@torch.no_grad()
+def measure_flops(
+    model: nn.Module,
+    input_size: Tuple[int, int, int] = (3, 32, 32),
+    device: str | torch.device = "cpu",
+) -> int:
+    """Approximate multiply-add FLOPs for one image.
+
+    Counts Conv2d and Linear layers only. BatchNorm/ReLU/residual addition are ignored,
+    which is sufficient for a clean coursework baseline comparison.
+    """
+    model = model.to(device)
+    model.eval()
+    flops: Dict[str, int] = {"total": 0}
+    hooks = []
+
+    def conv_hook(module: nn.Conv2d, inputs, output) -> None:
+        out = output[0] if isinstance(output, (tuple, list)) else output
+        batch_size = out.shape[0]
+        out_h, out_w = out.shape[2], out.shape[3]
+        kernel_ops = module.kernel_size[0] * module.kernel_size[1] * (module.in_channels // module.groups)
+        total_ops = batch_size * out_h * out_w * module.out_channels * kernel_ops
+        flops["total"] += int(total_ops / batch_size)
+
+    def linear_hook(module: nn.Linear, inputs, output) -> None:
+        batch_size = inputs[0].shape[0]
+        total_ops = batch_size * module.in_features * module.out_features
+        flops["total"] += int(total_ops / batch_size)
+
+    for module in model.modules():
+        if isinstance(module, nn.Conv2d):
+            hooks.append(module.register_forward_hook(conv_hook))
+        elif isinstance(module, nn.Linear):
+            hooks.append(module.register_forward_hook(linear_hook))
+
+    dummy = torch.randn(1, *input_size, device=device)
+    model(dummy)
+
+    for hook in hooks:
+        hook.remove()
+
+    return flops["total"]
+
+
+
+================================================
+FILE: src/utils/seed.py
+================================================
+from __future__ import annotations
+
+import os
+import random
+
+import numpy as np
+import torch
+
+
+def set_seed(seed: int = 42, deterministic: bool = False) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.benchmark = True
+
+
