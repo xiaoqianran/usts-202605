@@ -218,6 +218,10 @@ zip0/
 
 # Local workspace / dev tools (not part of projects)
 .cursor-server/
+.codex
+.cursor-server
+.vscode-server
+.windsurf-server
 .vscode-server/
 .windsurf-server/
 .grok/
