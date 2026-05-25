@@ -184,6 +184,7 @@ class FitnessEvaluator:
             seed=args.seed,
         )
         self.baseline_params, self.baseline_flops = model_cost(BASELINE_CHANNELS, device)
+        self.baseline_short_acc = None  # will be set after first evaluation of baseline itself
         self.baseline_short = self._evaluate_raw_candidate(BASELINE_CHANNELS, cache=False)
         self.baseline_short_acc = self.baseline_short.val_acc
 
@@ -201,9 +202,15 @@ class FitnessEvaluator:
 
     def _fitness(self, val_acc: float, params_ratio: float, flops_ratio: float) -> tuple[float, float, float]:
         # Constraint is relative to same-budget short baseline, not full 200-epoch baseline.
-        threshold = self.baseline_short_acc - self.args.allowed_short_acc_drop
-        below = max(0.0, threshold - val_acc)
-        penalty = self.args.penalty_mu * below
+        if self.baseline_short_acc is None:
+            # This is the very first evaluation (baseline itself) — no penalty yet
+            below = 0.0
+            penalty = 0.0
+        else:
+            threshold = self.baseline_short_acc - self.args.allowed_short_acc_drop
+            below = max(0.0, threshold - val_acc)
+            penalty = self.args.penalty_mu * below
+
         fitness = val_acc - 100.0 * (self.args.lambda_params * params_ratio + self.args.lambda_flops * flops_ratio) - penalty
         return fitness, below, penalty
 
