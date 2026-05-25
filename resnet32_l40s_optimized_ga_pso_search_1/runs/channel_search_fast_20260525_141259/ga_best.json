@@ -1,0 +1,23 @@
+{
+  "channels": [
+    16,
+    28,
+    48
+  ],
+  "fitness": 17.14556036438136,
+  "val_acc": 28.140000115966796,
+  "train_acc": 32.16999975585937,
+  "val_loss": 2.444228709793091,
+  "train_loss": 3.1222705909729003,
+  "params": 292090,
+  "flops": 54043104,
+  "params_ratio": 0.6292954493551709,
+  "flops_ratio": 0.7847962504809578,
+  "params_compression_rate": 0.3707045506448291,
+  "flops_reduction_rate": 0.2152037495190422,
+  "below_baseline_short_by": 0.0,
+  "penalty": 0.0,
+  "eval_time_sec": 1.2392847537994385,
+  "epochs": 1,
+  "inherited": true
+}

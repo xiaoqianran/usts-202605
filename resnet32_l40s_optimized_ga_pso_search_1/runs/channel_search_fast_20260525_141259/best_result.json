@@ -1,0 +1,108 @@
+{
+  "best_algorithm": "pso",
+  "best": {
+    "channels": [
+      16,
+      24,
+      56
+    ],
+    "fitness": 30.94696843093174,
+    "val_acc": 42.45999991455078,
+    "train_acc": 44.27999993896484,
+    "val_loss": 2.4502038860321047,
+    "train_loss": 2.752825197029114,
+    "params": 342218,
+    "flops": 53895728,
+    "params_ratio": 0.7372940877381214,
+    "flops_ratio": 0.7826561044928428,
+    "params_compression_rate": 0.26270591226187856,
+    "flops_reduction_rate": 0.21734389550715716,
+    "below_baseline_short_by": 0.0,
+    "penalty": 0.0,
+    "eval_time_sec": 1.2725598812103271,
+    "epochs": 1,
+    "inherited": true
+  },
+  "all_best": {
+    "ga": {
+      "channels": [
+        16,
+        28,
+        48
+      ],
+      "fitness": 17.14556036438136,
+      "val_acc": 28.140000115966796,
+      "train_acc": 32.16999975585937,
+      "val_loss": 2.444228709793091,
+      "train_loss": 3.1222705909729003,
+      "params": 292090,
+      "flops": 54043104,
+      "params_ratio": 0.6292954493551709,
+      "flops_ratio": 0.7847962504809578,
+      "params_compression_rate": 0.3707045506448291,
+      "flops_reduction_rate": 0.2152037495190422,
+      "below_baseline_short_by": 0.0,
+      "penalty": 0.0,
+      "eval_time_sec": 1.2392847537994385,
+      "epochs": 1,
+      "inherited": true
+    },
+    "pso": {
+      "channels": [
+        16,
+        24,
+        56
+      ],
+      "fitness": 30.94696843093174,
+      "val_acc": 42.45999991455078,
+      "train_acc": 44.27999993896484,
+      "val_loss": 2.4502038860321047,
+      "train_loss": 2.752825197029114,
+      "params": 342218,
+      "flops": 53895728,
+      "params_ratio": 0.7372940877381214,
+      "flops_ratio": 0.7826561044928428,
+      "params_compression_rate": 0.26270591226187856,
+      "flops_reduction_rate": 0.21734389550715716,
+      "below_baseline_short_by": 0.0,
+      "penalty": 0.0,
+      "eval_time_sec": 1.2725598812103271,
+      "epochs": 1,
+      "inherited": true
+    }
+  },
+  "baseline_short": {
+    "channels": [
+      16,
+      28,
+      56
+    ],
+    "fitness": 13.17021142244601,
+    "val_acc": 25.55999997253418,
+    "train_acc": 38.8999999633789,
+    "val_loss": 2.869422696685791,
+    "train_loss": 3.275646207046509,
+    "params": 361738,
+    "flops": 58485296,
+    "params_ratio": 0.7793490953433558,
+    "flops_ratio": 0.8493043073371389,
+    "params_compression_rate": 0.22065090465664416,
+    "flops_reduction_rate": 0.1506956926628611,
+    "below_baseline_short_by": 0.0,
+    "penalty": 0.0,
+    "eval_time_sec": 14.489546298980713,
+    "epochs": 1,
+    "inherited": true
+  },
+  "baseline": {
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "params": 464154,
+    "flops": 68862592
+  },
+  "num_unique_evaluations": 14,
+  "total_search_time_sec": 55.96725654602051
+}

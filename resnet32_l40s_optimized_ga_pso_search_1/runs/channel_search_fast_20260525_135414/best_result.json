@@ -1,0 +1,108 @@
+{
+  "best_algorithm": "ga",
+  "best": {
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "fitness": 84.9000015258789,
+    "val_acc": 99.9000015258789,
+    "train_acc": 99.98,
+    "val_loss": 0.00391602236777544,
+    "train_loss": 0.004914337707310915,
+    "params": 464154,
+    "flops": 68862592,
+    "params_ratio": 1.0,
+    "flops_ratio": 1.0,
+    "params_compression_rate": 0.0,
+    "flops_reduction_rate": 0.0,
+    "below_baseline_short_by": 0.0,
+    "penalty": 0.0,
+    "eval_time_sec": 3.7947752475738525,
+    "epochs": 3,
+    "inherited": true
+  },
+  "all_best": {
+    "ga": {
+      "channels": [
+        16,
+        32,
+        64
+      ],
+      "fitness": 84.9000015258789,
+      "val_acc": 99.9000015258789,
+      "train_acc": 99.98,
+      "val_loss": 0.00391602236777544,
+      "train_loss": 0.004914337707310915,
+      "params": 464154,
+      "flops": 68862592,
+      "params_ratio": 1.0,
+      "flops_ratio": 1.0,
+      "params_compression_rate": 0.0,
+      "flops_reduction_rate": 0.0,
+      "below_baseline_short_by": 0.0,
+      "penalty": 0.0,
+      "eval_time_sec": 3.7947752475738525,
+      "epochs": 3,
+      "inherited": true
+    },
+    "pso": {
+      "channels": [
+        16,
+        32,
+        64
+      ],
+      "fitness": 84.9000015258789,
+      "val_acc": 99.9000015258789,
+      "train_acc": 99.98,
+      "val_loss": 0.00391602236777544,
+      "train_loss": 0.004914337707310915,
+      "params": 464154,
+      "flops": 68862592,
+      "params_ratio": 1.0,
+      "flops_ratio": 1.0,
+      "params_compression_rate": 0.0,
+      "flops_reduction_rate": 0.0,
+      "below_baseline_short_by": 0.0,
+      "penalty": 0.0,
+      "eval_time_sec": 3.7947752475738525,
+      "epochs": 3,
+      "inherited": true
+    }
+  },
+  "baseline_short": {
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "fitness": 84.9000015258789,
+    "val_acc": 99.9000015258789,
+    "train_acc": 99.98,
+    "val_loss": 0.00391602236777544,
+    "train_loss": 0.004914337707310915,
+    "params": 464154,
+    "flops": 68862592,
+    "params_ratio": 1.0,
+    "flops_ratio": 1.0,
+    "params_compression_rate": 0.0,
+    "flops_reduction_rate": 0.0,
+    "below_baseline_short_by": 0.0,
+    "penalty": 0.0,
+    "eval_time_sec": 8.81320333480835,
+    "epochs": 3,
+    "inherited": true
+  },
+  "baseline": {
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "params": 464154,
+    "flops": 68862592
+  },
+  "num_unique_evaluations": 20,
+  "total_search_time_sec": 84.75125646591187
+}
