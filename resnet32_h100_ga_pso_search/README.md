@@ -157,16 +157,35 @@ python search_channels_ga_pso.py \
 
 ### 基于 2.2
 
+<!-- 这个和下面的是一样的
 python train_width_resnet32.py --channels 16,24,56 --run-name final_pso_16-24-56 --epochs 80 --milestones 40,60 --batch-size 1024 --num-workers 8 --amp --amp-dtype bf16 --channels-last --baseline-ckpt runs/resnet32_baseline/best.pt
+直接看下面的 -->
+
+```bash
+python train_width_resnet32.py \
+  --channels 16,24,56 \
+  --run-name final_pso_16-24-56 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 1024 \
+  --num-workers 8 \
+  --amp \
+  --amp-dtype bf16 \
+  --channels-last \
+  --baseline-ckpt runs/resnet32_baseline/best.pt
+```
 
 
 
+```bash
 python train_width_resnet32.py \
   --channels 16,24,56 \
   --run-name final_width_16-24-56 \
   --epochs 80 \
   --milestones 40,60 \
   --amp
+```
+
 
 
 ### 原始的
