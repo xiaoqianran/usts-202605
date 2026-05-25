@@ -1,0 +1,58 @@
+{
+  "best_algorithm": "pso",
+  "best": {
+    "channels": [
+      8,
+      8,
+      8,
+      8,
+      8,
+      20,
+      20,
+      16,
+      16,
+      16,
+      40,
+      40,
+      40,
+      40,
+      64
+    ],
+    "fitness": 16.144059958952038,
+    "test_acc": 26.0,
+    "train_acc": 23.92,
+    "test_loss": 1.9441450290679931,
+    "train_loss": 1.9511108154296875,
+    "params": 206066,
+    "flops": 24863360,
+    "params_ratio": 0.443960409691611,
+    "flops_ratio": 0.3610575680915409,
+    "params_compression_rate": 0.556039590308389,
+    "flops_reduction_rate": 0.6389424319084591,
+    "eval_time_sec": 1.4172682762145996,
+    "epochs": 2
+  },
+  "baseline": {
+    "block_channels": [
+      16,
+      16,
+      16,
+      16,
+      16,
+      32,
+      32,
+      32,
+      32,
+      32,
+      64,
+      64,
+      64,
+      64,
+      64
+    ],
+    "params": 464154,
+    "flops": 68862592
+  },
+  "num_unique_evaluations": 55,
+  "total_search_time_sec": 265.2509026527405
+}

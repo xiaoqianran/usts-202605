@@ -1,0 +1,41 @@
+{
+  "baseline_run": "resnet32_baseline",
+  "compressed_run": "final_block_16-16-12-12-8-16-20-20-20-20-40-40-32-32-32",
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ],
+  "compressed_block_channels": [
+    16,
+    16,
+    12,
+    12,
+    8,
+    16,
+    20,
+    20,
+    20,
+    20,
+    40,
+    40,
+    32,
+    32,
+    32
+  ],
+  "baseline_best_acc": 93.11,
+  "compressed_best_acc": 90.52,
+  "accuracy_drop": 2.5900000000000034,
+  "baseline_params": 464154,
+  "compressed_params": 161018,
+  "params_compression_rate": 0.6530935853186658,
+  "baseline_flops": 68862592,
+  "compressed_flops": 32633152,
+  "flops_reduction_rate": 0.5261120580532316,
+  "baseline_train_time_sec": 1289.5462594032288,
+  "compressed_train_time_sec": 490.3527002334595,
+  "kd_enabled": true,
+  "search_best_algorithm": "pso",
+  "search_time_sec": 131.2333538532257,
+  "search_num_unique_evaluations": 50
+}
