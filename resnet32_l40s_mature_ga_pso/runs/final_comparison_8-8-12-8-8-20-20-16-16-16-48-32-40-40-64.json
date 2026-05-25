@@ -1,0 +1,47 @@
+{
+  "baseline_run": "resnet32_l40s_b128_bf16",
+  "compressed_run": "final_block_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64",
+  "baseline_stage_channels": [
+    16,
+    32,
+    64
+  ],
+  "compressed_stage_channels": [
+    8,
+    20,
+    48
+  ],
+  "compressed_block_channels": [
+    8,
+    8,
+    12,
+    8,
+    8,
+    20,
+    20,
+    16,
+    16,
+    16,
+    48,
+    32,
+    40,
+    40,
+    64
+  ],
+  "baseline_best_acc": 93.45,
+  "compressed_best_acc": 88.63000017089844,
+  "accuracy_drop": 4.819999829101562,
+  "baseline_params": 464154,
+  "compressed_params": 201314,
+  "params_compression_rate": 0.566277571668024,
+  "baseline_flops": 68862592,
+  "compressed_flops": 24846976,
+  "flops_reduction_rate": 0.6391803549886708,
+  "baseline_train_time_sec": 1811.0661778450012,
+  "compressed_train_time_sec": 245.44551992416382,
+  "compressed_kd_mode": "logits",
+  "teacher_ckpt": "runs/resnet32_baseline/best.pt",
+  "kd_alpha": 0.7,
+  "kd_temperature": 4.0,
+  "at_weight": 0.0
+}

@@ -239,9 +239,9 @@ python train_block_width_resnet32.py \
   --amp --amp-dtype bf16 --channels-last
 ```
 
-### 7.1 最新三次搜索得到的最佳配置（待训练）
+### 7.1 最新三次搜索得到的最佳配置（已完成 80-epoch KD 训练）
 
-以下三个配置来自最近 block-level 搜索的 PSO 最优解，用户要求全部用 KD 完整训练（80 epochs）。
+以下三个配置来自最近 block-level 搜索的 PSO 最优解，已全部用 KD 完成 80 epochs 训练。实际训练结果如下（数据来源于各 `summary.json`）：
 
 ```bash
 # 配置1
@@ -260,6 +260,13 @@ python train_block_width_resnet32.py \
   --amp --amp-dtype bf16 --channels-last
 ```
 
+**训练结果（来自 runs/final_block_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64/summary.json）：**
+- Best Acc: **89.38%** (epoch 73)
+- Params: 187,990 (压缩率 59.5%)
+- FLOPs: 24.07M (减少 65.0%)
+- 训练时长: 214s
+- KD: logits, α=0.7, T=4.0
+
 ```bash
 # 配置2（该次搜索中 fitness 最高）
 python train_block_width_resnet32.py \
@@ -276,6 +283,13 @@ python train_block_width_resnet32.py \
   --kd-temperature 4.0 \
   --amp --amp-dtype bf16 --channels-last
 ```
+
+**训练结果（来自 runs/final_block_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64/summary.json）：**
+- Best Acc: **88.63%** (epoch 70)
+- Params: 201,314 (压缩率 56.6%)
+- FLOPs: 24.85M (减少 63.9%)
+- 训练时长: 245s
+- KD: logits, α=0.7, T=4.0
 
 ```bash
 # 配置3
@@ -294,6 +308,12 @@ python train_block_width_resnet32.py \
   --amp --amp-dtype bf16 --channels-last
 ```
 
+**训练结果（来自 runs/final_block_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64/summary.json）：**
+- Best Acc: **88.80%** (epoch 74)
+- Params: 202,438 (压缩率 56.4%)
+- FLOPs: 25.44M (减少 63.1%)
+- 训练时长: 243s
+- KD: logits, α=0.7, T=4.0
 
 ## 8. 结果对比
 
@@ -303,45 +323,58 @@ python train_block_width_resnet32.py \
 python compare_results.py \
   --baseline runs/resnet32_baseline/summary.json \
   --compressed runs/<你的最终训练目录>/summary.json \
-  --search-result runs/<本次搜索目录>/best_result.json \
   --output runs/final_comparison_<配置名>.json
 ```
 
-### 8.1 本次三个新配置的推荐对比命令
+**注意**：当前 `compare_results.py` 不支持 `--search-result` 参数（搜索结果已包含在 `best_result.json` 等文件中，可手动合并）。
 
-等你把上面 7.1 节的三个模型训练完成后，建议为每个配置单独生成对比结果（推荐做法）：
+### 8.1 本次三个新配置的对比结果（已生成）
 
-**配置1 对比命令：**
+三个最终模型的 80-epoch KD 训练已全部完成，对比 JSON 已通过 `compare_results.py` 生成在 `runs/` 目录下：
+
+- `runs/final_comparison_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64.json`
+- `runs/final_comparison_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64.json`
+- `runs/final_comparison_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64.json`
+
+**实际对比摘要**（来自生成的 JSON）：
+
+| 配置 | Best Acc | Acc Drop | Params | 压缩率 | FLOPs | FLOPs减少 | 训练时长 |
+|------|----------|----------|--------|--------|-------|-----------|----------|
+| Baseline (b128+BF16) | 93.45% | - | 464,154 | - | 68.86M | - | 1811s |
+| Config1 (12-8-...-64) | **89.38%** | 4.07% | 187,990 | 59.5% | 24.07M | 65.0% | 214s |
+| Config2 (8-8-...-64) | 88.63% | 4.82% | 201,314 | 56.6% | 24.85M | 63.9% | 245s |
+| Config3 (12-8-...-64) | 88.80% | 4.65% | 202,438 | 56.4% | 25.44M | 63.1% | 243s |
+
+**已执行的对比命令**（供参考，实际已运行）：
+
+**配置1：**
 ```bash
 python compare_results.py \
   --baseline runs/resnet32_baseline/summary.json \
   --compressed runs/final_block_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64/summary.json \
-  --search-result runs/block_channel_search_fast_*/best_result.json \
   --output runs/final_comparison_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64.json
 ```
 
-**配置2 对比命令（fitness 最高那个）：**
+**配置2（原搜索中 fitness 最高）：**
 ```bash
 python compare_results.py \
   --baseline runs/resnet32_baseline/summary.json \
   --compressed runs/final_block_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64/summary.json \
-  --search-result runs/block_channel_search_fast_*/best_result.json \
   --output runs/final_comparison_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64.json
 ```
 
-**配置3 对比命令：**
+**配置3：**
 ```bash
 python compare_results.py \
   --baseline runs/resnet32_baseline/summary.json \
   --compressed runs/final_block_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64/summary.json \
-  --search-result runs/block_channel_search_fast_*/best_result.json \
   --output runs/final_comparison_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64.json
 ```
 
-**注意事项：**
-- `--search-result` 中的 `block_channel_search_fast_*` 需要替换成你实际本次搜索生成的目录名（例如 `block_channel_search_fast_20250525_143022`）。
-- 建议为每个配置单独生成一个 `final_comparison_xxx.json`，后面写论文或做表格时会方便很多。
-- 如果你只想快速看一个，可以先只跑配置2（fitness 最高的那个）。
+**说明：**
+- 所有最终模型均使用相同 KD 设置（logits, α=0.7, T=4.0）和 baseline teacher。
+- 精度损失约 4.1~4.8%，但参数量减少 ~56-60%，FLOPs 减少 ~63-65%，训练速度提升显著（~7-8x 更快）。
+- 推荐 Config1 作为精度-压缩最佳平衡点（89.38%）。
 
 ---
 
