@@ -1,0 +1,4045 @@
+Directory structure:
+└── resnet32_h100_ga_pso_search/
+    ├── README.md
+    ├── compare_results.py
+    ├── evaluate_resnet32.py
+    ├── evaluate_width_resnet32.py
+    ├── model_info.py
+    ├── requirements.txt
+    ├── search_channels_ga_pso.py
+    ├── train_resnet32.py
+    ├── train_width_resnet32.py
+    ├── data/
+    │   └── cifar-10-batches-py/
+    │       ├── readme.html
+    │       └── batches.meta
+    ├── docs/
+    │   ├── experiment_plan.md
+    │   ├── h100_fast_notes.md
+    │   ├── next_ga_pso_plan.md
+    │   └── optimization_model.md
+    ├── runs/
+    │   ├── final_comparison.json
+    │   ├── channel_search_fast_20260525_135213/
+    │   │   └── search_config.json
+    │   ├── channel_search_fast_20260525_135414/
+    │   │   ├── best_result.json
+    │   │   ├── evaluations.csv
+    │   │   ├── final_train_command.txt
+    │   │   ├── ga_best.json
+    │   │   ├── ga_history.csv
+    │   │   ├── pso_best.json
+    │   │   ├── pso_history.csv
+    │   │   └── search_config.json
+    │   ├── channel_search_fast_20260525_141259/
+    │   │   ├── best_result.json
+    │   │   ├── evaluations.csv
+    │   │   ├── final_train_command.txt
+    │   │   ├── ga_best.json
+    │   │   ├── ga_history.csv
+    │   │   ├── pso_best.json
+    │   │   ├── pso_history.csv
+    │   │   └── search_config.json
+    │   ├── debug_bootstrap_135326/
+    │   │   └── evaluations.csv
+    │   ├── final_pso_16-24-56/
+    │   │   ├── best.pt
+    │   │   ├── last.pt
+    │   │   ├── metrics.csv
+    │   │   └── summary.json
+    │   ├── final_width_16-24-48/
+    │   │   ├── best.pt
+    │   │   ├── last.pt
+    │   │   ├── metrics.csv
+    │   │   └── summary.json
+    │   ├── final_width_16-24-56/
+    │   │   ├── best.pt
+    │   │   ├── last.pt
+    │   │   ├── metrics.csv
+    │   │   └── summary.json
+    │   └── resnet32_baseline/
+    │       ├── best.pt
+    │       ├── last.pt
+    │       ├── metrics.csv
+    │       └── summary.json
+    ├── scripts/
+    │   ├── run_full.sh
+    │   ├── run_h100_baseline_fast.sh
+    │   ├── run_h100_search_fast.sh
+    │   ├── run_quick.sh
+    │   ├── run_search_full.sh
+    │   ├── run_search_quick.sh
+    │   ├── run_search_quick_windows.ps1
+    │   ├── run_train_width_example.sh
+    │   └── run_windows.ps1
+    └── src/
+        ├── __init__.py
+        ├── data/
+        │   ├── __init__.py
+        │   └── cifar10.py
+        ├── models/
+        │   ├── __init__.py
+        │   ├── resnet32_cifar.py
+        │   └── resnet32_width.py
+        └── utils/
+            ├── __init__.py
+            ├── accelerate.py
+            ├── checkpoint.py
+            ├── metrics.py
+            └── seed.py
+
+================================================
+FILE: README.md
+================================================
+# ResNet32 CIFAR-10 + GA/PSO 通道配置搜索
+
+本项目用于《智能信息技术与应用》课程论文：
+
+1. 先训练标准 CIFAR-10 ResNet32 baseline。
+2. 在不改变 ResNet32 深度结构的前提下，搜索三个 stage 的通道配置 `[c1, c2, c3]`。
+3. 使用 GA（遗传算法）和 PSO（粒子群优化）求解通道配置优化问题。
+4. 完整比较压缩前后 Accuracy、Params、FLOPs、运行时间。
+
+> 注意：本阶段是 **stage-level 结构化通道宽度压缩**。它不是 BN-gamma 真通道索引剪枝。目的：先把“baseline → 智能优化搜索 → 最优压缩模型 → 指标对比”的闭环跑通。
+
+---
+
+## 安装
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## 查看标准 ResNet32 参数量/FLOPs
+
+```bash
+python model_info.py
+```
+
+查看某个压缩通道配置：
+
+```bash
+python model_info.py --channels 16,24,48
+```
+
+---
+
+## 1. 训练标准 ResNet32 baseline
+
+快速测试：
+
+```bash
+python train_resnet32.py --epochs 2 --batch-size 128 --lr 0.05 --milestones 1 --run-name resnet32_quick
+```
+
+正式训练：
+
+```bash
+python train_resnet32.py \
+  --run-name resnet32_baseline \
+  --epochs 200 \
+  --batch-size 128 \
+  --lr 0.1 \
+  --milestones 100,150 \
+  --amp
+```
+
+输出：
+
+```text
+runs/resnet32_baseline/best.pt
+runs/resnet32_baseline/last.pt
+runs/resnet32_baseline/metrics.csv
+runs/resnet32_baseline/summary.json
+```
+
+---
+
+## 2. GA/PSO 搜索通道配置
+
+默认搜索空间：
+
+```text
+c1 ∈ {8, 12, 16}
+c2 ∈ {16, 20, 24, 28, 32}
+c3 ∈ {32, 40, 48, 56, 64}
+```
+
+即仍然是 ResNet32：
+
+```text
+conv1 + stage1(5 blocks) + stage2(5 blocks) + stage3(5 blocks) + GAP + FC
+```
+
+只是 stage 通道数从原始 `[16, 32, 64]` 变成搜索得到的 `[c1, c2, c3]`。
+
+快速搜索：
+
+```bash
+python search_channels_ga_pso.py \
+  --algorithm both \
+  --search-epochs 1 \
+  --ga-population 4 \
+  --ga-generations 2 \
+  --pso-particles 4 \
+  --pso-iterations 2 \
+  --max-train-samples 1000 \
+  --max-test-samples 500
+```
+
+【这个会出现不压缩】
+```bash
+python search_channels_ga_pso.py \
+  --algorithm both \
+  --search-epochs 3 \
+  --ga-population 8 \
+  --ga-generations 5 \
+  --pso-particles 8 \
+  --pso-iterations 5 \
+  --max-train-samples 5000 \
+  --max-test-samples 2000 \
+  --amp
+```
+
+输出：
+
+```text
+runs/channel_search_ga_pso/search_config.json
+runs/channel_search_ga_pso/evaluations.csv
+runs/channel_search_ga_pso/ga_history.csv
+runs/channel_search_ga_pso/pso_history.csv
+runs/channel_search_ga_pso/ga_best.json
+runs/channel_search_ga_pso/pso_best.json
+runs/channel_search_ga_pso/best_result.json
+```
+
+
+## 2.2 改进搜索空间
+
+stage1: {12, 16}
+stage2: {20, 24, 28}
+stage3: {40, 48, 56}
+
+较正式搜索：
+
+python search_channels_ga_pso.py \
+  --algorithm both \
+  --space "12,16;20,24,28;40,48,56" \
+  --search-epochs 1 \
+  --ga-population 8 \
+  --ga-generations 5 \
+  --pso-particles 8 \
+  --pso-iterations 5 \
+  --max-train-samples 10000 \
+  --max-val-samples 5000 \
+  --batch-size 2048 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp \
+  --amp-dtype bf16 \
+  --channels-last
+
+---
+
+## 3. 训练搜索得到的最优压缩模型
+
+搜索完成后，终端会打印推荐命令。也可以手动运行：
+
+
+### 基于 2.2
+
+python train_width_resnet32.py --channels 16,24,56 --run-name final_pso_16-24-56 --epochs 80 --milestones 40,60 --batch-size 1024 --num-workers 8 --amp --amp-dtype bf16 --channels-last --baseline-ckpt runs/resnet32_baseline/best.pt
+
+
+
+python train_width_resnet32.py \
+  --channels 16,24,56 \
+  --run-name final_width_16-24-56 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --amp
+
+
+### 原始的
+```bash
+python train_width_resnet32.py \
+  --channels 16,24,48 \
+  --run-name final_width_16-24-48 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --amp
+```
+
+输出：
+
+```text
+runs/final_width_16-24-48/best.pt
+runs/final_width_16-24-48/metrics.csv
+runs/final_width_16-24-48/summary.json
+```
+
+---
+
+## 4. 对比 baseline 和压缩模型
+
+```bash
+python compare_results.py \
+  --baseline runs/resnet32_baseline/summary.json \
+  --compressed runs/final_width_16-24-48/summary.json \
+  --output runs/final_comparison.json
+
+
+python compare_results.py \
+  --baseline runs/resnet32_baseline/summary.json \
+  --compressed runs/final_width_16-24-56/summary.json \
+  --output runs/final_comparison.json
+
+python compare_results.py \
+  --baseline runs/resnet32_baseline/summary.json \
+  --compressed runs/final_pso_16-24-56/summary.json \
+  --output runs/final_comparison.json
+
+```
+
+输出字段包括：
+
+```text
+baseline_best_acc
+compressed_best_acc
+accuracy_drop
+params_compression_rate
+flops_reduction_rate
+baseline_train_time_sec
+compressed_train_time_sec
+```
+
+这几个指标可以直接放进课程论文结果表。
+
+---
+
+## 5. 适应度函数
+
+搜索阶段的适应度函数：
+
+```text
+Fitness(x) = Acc(x) - 100 * [ λp * Params(x)/Params0 + λf * FLOPs(x)/FLOPs0 ]
+```
+
+其中：
+
+```text
+x = [c1, c2, c3]
+Acc(x)：候选模型短训练后的验证准确率
+Params0 / FLOPs0：原始 ResNet32 的参数量和 FLOPs
+λp / λf：参数量和计算量惩罚权重
+```
+
+默认：
+
+```text
+λp = 0.15
+λf = 0.15
+```
+
+如果你更重视精度，减小 λ；如果你更重视压缩率，增大 λ。
+
+---
+
+## 6. 文件结构
+
+```text
+train_resnet32.py             # 标准 ResNet32 baseline 训练
+evaluate_resnet32.py          # 标准 ResNet32 checkpoint 评估
+model_info.py                 # 查看标准/压缩配置的 Params 与 FLOPs
+search_channels_ga_pso.py     # GA/PSO 搜索通道配置
+train_width_resnet32.py       # 训练搜索得到的压缩 ResNet32
+evaluate_width_resnet32.py    # 评估压缩 ResNet32 checkpoint
+compare_results.py            # baseline vs compressed 指标对比
+
+src/models/resnet32_cifar.py  # 标准 ResNet32
+src/models/resnet32_width.py  # 可变通道 ResNet32，深度仍为 32
+src/data/cifar10.py           # CIFAR-10 dataloader，支持子集搜索
+src/utils/                    # seed/checkpoint/metrics
+
+docs/optimization_model.md    # 优化问题建模说明
+docs/experiment_plan.md       # 实验流程说明
+```
+
+---
+
+## H100 快速版建议
+
+本包已加入 H100 训练/搜索加速：BF16 AMP、channels_last、DataLoader persistent workers、较大 batch size、TF32、以及搜索阶段的 baseline 权重继承。
+
+推荐先用已有 baseline checkpoint 搜索：
+
+```bash
+bash scripts/run_h100_search_fast.sh
+```
+
+或者手动运行：
+
+```bash
+python search_channels_ga_pso.py \
+  --algorithm both \
+  --search-epochs 1 \
+  --batch-size 2048 \
+  --num-workers 8 \
+  --max-train-samples 10000 \
+  --max-val-samples 5000 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+搜索完成后，直接查看最终训练命令：
+
+```bash
+cat runs/channel_search_fast_*/final_train_command.txt
+```
+
+更多说明见：
+
+```text
+docs/h100_fast_notes.md
+```
+
+
+
+================================================
+FILE: compare_results.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+
+def load_json(path: str | Path) -> dict:
+    with Path(path).open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Compare baseline ResNet32 and compressed WidthResNet32 summaries")
+    parser.add_argument("--baseline", required=True, help="baseline summary.json, e.g. runs/resnet32_baseline/summary.json")
+    parser.add_argument("--compressed", required=True, help="compressed summary.json, e.g. runs/final_width_16-24-48/summary.json")
+    parser.add_argument("--output", default=None)
+    args = parser.parse_args()
+
+    base = load_json(args.baseline)
+    comp = load_json(args.compressed)
+
+    base_acc = float(base.get("best_acc", 0.0))
+    comp_acc = float(comp.get("best_acc", 0.0))
+    base_params = int(base["params"])
+    comp_params = int(comp["params"])
+    base_flops = int(base["flops"])
+    comp_flops = int(comp["flops"])
+
+    result = {
+        "baseline_run": base.get("run_name"),
+        "compressed_run": comp.get("run_name"),
+        "baseline_channels": base.get("stage_channels"),
+        "compressed_channels": comp.get("stage_channels"),
+        "baseline_best_acc": base_acc,
+        "compressed_best_acc": comp_acc,
+        "accuracy_drop": base_acc - comp_acc,
+        "baseline_params": base_params,
+        "compressed_params": comp_params,
+        "params_compression_rate": 1 - comp_params / base_params,
+        "baseline_flops": base_flops,
+        "compressed_flops": comp_flops,
+        "flops_reduction_rate": 1 - comp_flops / base_flops,
+        "baseline_train_time_sec": base.get("total_train_time_sec"),
+        "compressed_train_time_sec": comp.get("total_train_time_sec"),
+    }
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        with Path(args.output).open("w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: evaluate_resnet32.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+from tqdm import tqdm
+
+from src.data import get_cifar10_test_loader
+from src.models import resnet32
+from src.utils.checkpoint import load_checkpoint
+from src.utils.metrics import AverageMeter, accuracy, count_parameters, human_number, measure_flops
+
+
+
+@torch.no_grad()
+def evaluate(model: nn.Module, loader, criterion, device: torch.device) -> tuple[float, float]:
+    model.eval()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    for images, targets in tqdm(loader, desc="eval"):
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        outputs = model(images)
+        loss = criterion(outputs, targets)
+        acc1 = accuracy(outputs, targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+    return losses.avg, top1.avg
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate standard ResNet32 checkpoint on CIFAR-10")
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--output", default=None, help="optional JSON output path")
+    args = parser.parse_args()
+
+    device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
+    ckpt = load_checkpoint(args.checkpoint, map_location="cpu")
+
+    model = resnet32(num_classes=10)
+    model.load_state_dict(ckpt["model"])
+    model = model.to(device)
+
+    loader = get_cifar10_test_loader(args.data_dir, args.batch_size, args.num_workers)
+    criterion = nn.CrossEntropyLoss()
+    loss, acc = evaluate(model, loader, criterion, device)
+
+    params = count_parameters(model)
+    flops = measure_flops(model, input_size=(3, 32, 32), device=device)
+    result = {
+        "checkpoint": str(args.checkpoint),
+        "model": "ResNet32",
+        "dataset": "CIFAR-10",
+        "test_loss": loss,
+        "test_acc": acc,
+        "params": params,
+        "flops": flops,
+    }
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(f"Params: {human_number(params)} | FLOPs: {human_number(flops)} | Acc: {acc:.2f}%")
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        with Path(args.output).open("w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: evaluate_width_resnet32.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+from tqdm import tqdm
+
+from src.data import get_cifar10_test_loader
+from src.models import width_resnet32
+from src.utils.checkpoint import load_checkpoint
+from src.utils.metrics import AverageMeter, accuracy, count_parameters, human_number, measure_flops
+
+
+def parse_channels(s: str) -> list[int]:
+    values = [int(x.strip()) for x in s.replace("-", ",").split(",") if x.strip()]
+    if len(values) != 3:
+        raise argparse.ArgumentTypeError("channels must contain 3 integers, e.g. 16,24,48")
+    return values
+
+
+@torch.no_grad()
+def evaluate(model: nn.Module, loader, criterion, device: torch.device) -> tuple[float, float]:
+    model.eval()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    for images, targets in tqdm(loader, desc="eval"):
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        outputs = model(images)
+        loss = criterion(outputs, targets)
+        acc1 = accuracy(outputs, targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+    return losses.avg, top1.avg
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate variable-width ResNet32 checkpoint on CIFAR-10")
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--channels", type=parse_channels, default=None, help="optional; if omitted, read from checkpoint config")
+    parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--max-test-samples", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--output", default=None)
+    args = parser.parse_args()
+
+    device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
+    ckpt = load_checkpoint(args.checkpoint, map_location="cpu")
+    channels = args.channels or ckpt.get("config", {}).get("stage_channels")
+    if channels is None:
+        raise ValueError("channels not provided and not found in checkpoint config")
+
+    model = width_resnet32(stage_channels=channels, num_classes=10)
+    model.load_state_dict(ckpt["model"])
+    model = model.to(device)
+
+    loader = get_cifar10_test_loader(
+        data_dir=args.data_dir,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        max_test_samples=args.max_test_samples,
+        seed=args.seed,
+    )
+    criterion = nn.CrossEntropyLoss()
+    loss, acc = evaluate(model, loader, criterion, device)
+
+    params = count_parameters(model)
+    flops = measure_flops(model, input_size=(3, 32, 32), device=device)
+    result = {
+        "checkpoint": str(args.checkpoint),
+        "model": "WidthResNet32",
+        "dataset": "CIFAR-10",
+        "stage_channels": list(channels),
+        "test_loss": loss,
+        "test_acc": acc,
+        "params": params,
+        "flops": flops,
+    }
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(f"Params: {human_number(params)} | FLOPs: {human_number(flops)} | Acc: {acc:.2f}%")
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        with Path(args.output).open("w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: model_info.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+
+import torch
+
+from src.models import resnet32, width_resnet32
+from src.utils.metrics import count_parameters, human_number, measure_flops
+
+
+def parse_channels(s: str) -> list[int]:
+    values = [int(x.strip()) for x in s.replace("-", ",").split(",") if x.strip()]
+    if len(values) != 3:
+        raise argparse.ArgumentTypeError("channels must contain 3 integers, e.g. 16,24,48")
+    return values
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Show Params/FLOPs for standard or variable-width ResNet32")
+    parser.add_argument("--channels", type=parse_channels, default=[16, 32, 64], help="stage channels, e.g. 16,24,48")
+    args = parser.parse_args()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    is_standard = args.channels == [16, 32, 64]
+    model = resnet32(num_classes=10).to(device) if is_standard else width_resnet32(stage_channels=args.channels, num_classes=10).to(device)
+    params = count_parameters(model)
+    flops = measure_flops(model, input_size=(3, 32, 32), device=device)
+    info = {
+        "model": "ResNet32" if is_standard else "WidthResNet32",
+        "dataset": "CIFAR-10",
+        "stage_channels": args.channels,
+        "blocks_per_stage": 5,
+        "params": params,
+        "params_human": human_number(params),
+        "flops": flops,
+        "flops_human": human_number(flops),
+        "params_compression_rate_vs_16_32_64": None,
+        "flops_reduction_rate_vs_16_32_64": None,
+    }
+    if not is_standard:
+        base = resnet32(num_classes=10).to(device)
+        base_params = count_parameters(base)
+        base_flops = measure_flops(base, input_size=(3, 32, 32), device=device)
+        info["params_compression_rate_vs_16_32_64"] = 1 - params / base_params
+        info["flops_reduction_rate_vs_16_32_64"] = 1 - flops / base_flops
+    print(json.dumps(info, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: requirements.txt
+================================================
+torch
+torchvision
+tqdm
+numpy
+
+
+
+================================================
+FILE: search_channels_ga_pso.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import random
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Dict, Iterable, Sequence, Tuple
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+
+from src.data import get_cifar10_train_val_loaders
+from src.models import width_resnet32
+from src.utils.accelerate import (
+    autocast_context,
+    make_grad_scaler,
+    maybe_channels_last,
+    maybe_compile,
+    move_images,
+    setup_torch_fast,
+)
+from src.utils.checkpoint import load_sliced_baseline_weights
+from src.utils.metrics import AverageMeter, accuracy, count_parameters, human_number, measure_flops
+from src.utils.seed import set_seed
+
+Candidate = Tuple[int, int, int]
+DEFAULT_SPACE = [[12, 16], [20, 24, 28, 32], [40, 48, 56, 64]]
+BASELINE_CHANNELS: Candidate = (16, 32, 64)
+
+
+@dataclass
+class EvalResult:
+    channels: list[int]
+    fitness: float
+    val_acc: float
+    train_acc: float
+    val_loss: float
+    train_loss: float
+    params: int
+    flops: int
+    params_ratio: float
+    flops_ratio: float
+    params_compression_rate: float
+    flops_reduction_rate: float
+    below_baseline_short_by: float
+    penalty: float
+    eval_time_sec: float
+    epochs: int
+    inherited: bool
+
+
+def parse_space(s: str | None) -> list[list[int]]:
+    if not s:
+        return DEFAULT_SPACE
+    groups = []
+    for group in s.split(";"):
+        vals = [int(x.strip()) for x in group.split(",") if x.strip()]
+        if not vals:
+            raise argparse.ArgumentTypeError("empty group in search space")
+        groups.append(vals)
+    if len(groups) != 3:
+        raise argparse.ArgumentTypeError("space must have 3 groups separated by ';'")
+    return groups
+
+
+def candidate_to_key(channels: Sequence[int]) -> str:
+    return "-".join(map(str, channels))
+
+
+def write_csv_header_if_needed(path: Path, fields: Iterable[str]) -> None:
+    if not path.exists():
+        with path.open("w", newline="", encoding="utf-8") as f:
+            csv.DictWriter(f, fieldnames=list(fields)).writeheader()
+
+
+def append_csv(path: Path, row: dict) -> None:
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        writer.writerow(row)
+
+
+def random_candidate(space: list[list[int]], rng: random.Random) -> Candidate:
+    return tuple(rng.choice(g) for g in space)  # type: ignore[return-value]
+
+
+def repair_candidate(channels: Sequence[int], space: list[list[int]]) -> Candidate:
+    return tuple(min(g, key=lambda x: abs(x - int(round(v)))) for v, g in zip(channels, space))  # type: ignore[return-value]
+
+
+def decode_position(position: Sequence[float], space: list[list[int]]) -> Candidate:
+    out = []
+    for p, g in zip(position, space):
+        idx = max(0, min(len(g) - 1, int(round(p))))
+        out.append(g[idx])
+    return tuple(out)  # type: ignore[return-value]
+
+
+def model_cost(channels: Sequence[int], device: torch.device) -> tuple[int, int]:
+    m = width_resnet32(stage_channels=channels, num_classes=10).to(device)
+    params = count_parameters(m)
+    flops = measure_flops(m, input_size=(3, 32, 32), device=device)
+    del m
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return params, flops
+
+
+def train_one_epoch(model, loader, criterion, optimizer, device, use_amp: bool, amp_dtype: str, channels_last: bool):
+    model.train()
+    losses, top1 = AverageMeter(), AverageMeter()
+    scaler = make_grad_scaler(device, use_amp, amp_dtype)
+    for images, targets in tqdm(loader, desc="candidate train", leave=False):
+        images = move_images(images, device, channels_last)
+        targets = targets.to(device, non_blocking=True)
+        optimizer.zero_grad(set_to_none=True)
+        with autocast_context(device, use_amp, amp_dtype):
+            outputs = model(images)
+            loss = criterion(outputs, targets)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        acc1 = accuracy(outputs.detach(), targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+    return losses.avg, top1.avg
+
+
+@torch.no_grad()
+def evaluate(model, loader, criterion, device, use_amp: bool, amp_dtype: str, channels_last: bool):
+    model.eval()
+    losses, top1 = AverageMeter(), AverageMeter()
+    for images, targets in tqdm(loader, desc="candidate val", leave=False):
+        images = move_images(images, device, channels_last)
+        targets = targets.to(device, non_blocking=True)
+        with autocast_context(device, use_amp, amp_dtype):
+            outputs = model(images)
+            loss = criterion(outputs, targets)
+        acc1 = accuracy(outputs, targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+    return losses.avg, top1.avg
+
+
+class FitnessEvaluator:
+    def __init__(self, args, space: list[list[int]], out_dir: Path, device: torch.device) -> None:
+        self.args = args
+        self.space = space
+        self.out_dir = out_dir
+        self.device = device
+        self.use_amp = bool(args.amp and device.type == "cuda")
+        self.cache: Dict[str, EvalResult] = {}
+        self.eval_csv = out_dir / "evaluations.csv"
+
+        self.train_loader, self.val_loader = get_cifar10_train_val_loaders(
+            data_dir=args.data_dir,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            val_size=args.val_size,
+            max_train_samples=args.max_train_samples,
+            max_val_samples=args.max_val_samples,
+            seed=args.seed,
+        )
+        self.baseline_params, self.baseline_flops = model_cost(BASELINE_CHANNELS, device)
+
+        # Bootstrap: evaluate the "short" baseline (same search_epochs budget + inheritance)
+        # so that _fitness can apply the "allowed_short_acc_drop" constraint to candidates.
+        # We set a sentinel so _fitness doesn't crash when evaluating the baseline itself.
+        self.baseline_short_acc = None
+        self.baseline_short = self._evaluate_raw_candidate(BASELINE_CHANNELS, cache=False)
+        self.baseline_short_acc = self.baseline_short.val_acc
+
+        fields = list(EvalResult.__dataclass_fields__.keys())
+        write_csv_header_if_needed(self.eval_csv, ["channels", *[f for f in fields if f != "channels"]])
+
+    def _make_model(self, channels: Sequence[int]):
+        model = width_resnet32(stage_channels=channels, num_classes=10).to(self.device)
+        inherited = False
+        if self.args.baseline_ckpt and Path(self.args.baseline_ckpt).exists():
+            load_sliced_baseline_weights(model, self.args.baseline_ckpt, verbose=False)
+            inherited = True
+        model = maybe_channels_last(model, self.args.channels_last)
+        return model, inherited
+
+    def _fitness(self, val_acc: float, params_ratio: float, flops_ratio: float) -> tuple[float, float, float]:
+        # Constraint is relative to same-budget short baseline, not full 200-epoch baseline.
+        if self.baseline_short_acc is None:
+            # Bootstrap case: we are still computing baseline_short itself (first call in __init__).
+            # No "below baseline" penalty makes sense yet — the baseline defines the reference.
+            below = 0.0
+            penalty = 0.0
+            fitness = val_acc - 100.0 * (self.args.lambda_params * params_ratio + self.args.lambda_flops * flops_ratio)
+        else:
+            threshold = self.baseline_short_acc - self.args.allowed_short_acc_drop
+            below = max(0.0, threshold - val_acc)
+            penalty = self.args.penalty_mu * below
+            fitness = val_acc - 100.0 * (self.args.lambda_params * params_ratio + self.args.lambda_flops * flops_ratio) - penalty
+        return fitness, below, penalty
+
+    def _evaluate_raw_candidate(self, channels: Sequence[int], cache: bool = True) -> EvalResult:
+        channels = repair_candidate(channels, self.space)
+        key = candidate_to_key(channels)
+        if cache and key in self.cache:
+            return self.cache[key]
+
+        start = time.time()
+        local_seed = self.args.seed + sum((i + 1) * c for i, c in enumerate(channels))
+        set_seed(local_seed, deterministic=False)
+
+        model, inherited = self._make_model(channels)
+        train_model = maybe_compile(model, self.args.compile)
+        params, flops = count_parameters(model), measure_flops(model, input_size=(3, 32, 32), device=self.device)
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum, weight_decay=self.args.weight_decay)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(self.args.search_epochs, 1))
+
+        train_loss = train_acc = math.nan
+        for _ in range(self.args.search_epochs):
+            train_loss, train_acc = train_one_epoch(train_model, self.train_loader, criterion, optimizer, self.device, self.use_amp, self.args.amp_dtype, self.args.channels_last)
+            scheduler.step()
+        val_loss, val_acc = evaluate(train_model, self.val_loader, criterion, self.device, self.use_amp, self.args.amp_dtype, self.args.channels_last)
+
+        params_ratio = params / self.baseline_params
+        flops_ratio = flops / self.baseline_flops
+        fitness, below, penalty = self._fitness(val_acc, params_ratio, flops_ratio)
+        res = EvalResult(
+            channels=list(channels), fitness=float(fitness), val_acc=float(val_acc), train_acc=float(train_acc),
+            val_loss=float(val_loss), train_loss=float(train_loss), params=int(params), flops=int(flops),
+            params_ratio=float(params_ratio), flops_ratio=float(flops_ratio),
+            params_compression_rate=float(1 - params_ratio), flops_reduction_rate=float(1 - flops_ratio),
+            below_baseline_short_by=float(below), penalty=float(penalty), eval_time_sec=float(time.time() - start),
+            epochs=int(self.args.search_epochs), inherited=bool(inherited),
+        )
+        if cache:
+            self.cache[key] = res
+            row = asdict(res); row["channels"] = key
+            append_csv(self.eval_csv, row)
+        del model, train_model
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+        return res
+
+    def evaluate_candidate(self, channels: Sequence[int]) -> EvalResult:
+        return self._evaluate_raw_candidate(channels, cache=True)
+
+
+def tournament_select(population: list[Candidate], scores: dict[Candidate, float], rng: random.Random, k: int = 3) -> Candidate:
+    return max([rng.choice(population) for _ in range(k)], key=lambda c: scores[c])
+
+
+def run_ga(args, evaluator: FitnessEvaluator, space: list[list[int]], out_dir: Path) -> EvalResult:
+    rng = random.Random(args.seed + 101)
+    history_csv = out_dir / "ga_history.csv"
+    write_csv_header_if_needed(history_csv, ["generation", "best_channels", "best_fitness", "best_val_acc", "best_params_ratio", "best_flops_ratio"])
+    population, seen = [], set()
+    while len(population) < args.ga_population:
+        cand = random_candidate(space, rng)
+        if cand not in seen:
+            population.append(cand); seen.add(cand)
+    global_best = None
+    for gen in range(args.ga_generations):
+        print(f"\n[GA] Generation {gen + 1}/{args.ga_generations}")
+        results = {cand: evaluator.evaluate_candidate(cand) for cand in population}
+        scores = {cand: r.fitness for cand, r in results.items()}
+        gen_best = max(results.values(), key=lambda r: r.fitness)
+        if global_best is None or gen_best.fitness > global_best.fitness:
+            global_best = gen_best
+        append_csv(history_csv, {"generation": gen + 1, "best_channels": candidate_to_key(gen_best.channels), "best_fitness": f"{gen_best.fitness:.6f}", "best_val_acc": f"{gen_best.val_acc:.4f}", "best_params_ratio": f"{gen_best.params_ratio:.6f}", "best_flops_ratio": f"{gen_best.flops_ratio:.6f}"})
+        print(f"[GA] best={candidate_to_key(gen_best.channels)} fit={gen_best.fitness:.3f} val={gen_best.val_acc:.2f}% params↓={gen_best.params_compression_rate:.1%} flops↓={gen_best.flops_reduction_rate:.1%}")
+        elites = sorted(population, key=lambda c: scores[c], reverse=True)[:max(1, args.ga_elites)]
+        next_pop = list(elites)
+        while len(next_pop) < args.ga_population:
+            p1, p2 = tournament_select(population, scores, rng), tournament_select(population, scores, rng)
+            child = tuple(p1[i] if rng.random() < 0.5 else p2[i] for i in range(3)) if rng.random() < args.ga_crossover_rate else p1
+            child = list(child)
+            for i, group in enumerate(space):
+                if rng.random() < args.ga_mutation_rate:
+                    child[i] = rng.choice(group)
+            next_pop.append(repair_candidate(child, space))
+        population = next_pop
+    assert global_best is not None
+    (out_dir / "ga_best.json").write_text(json.dumps(asdict(global_best), ensure_ascii=False, indent=2), encoding="utf-8")
+    return global_best
+
+
+def run_pso(args, evaluator: FitnessEvaluator, space: list[list[int]], out_dir: Path) -> EvalResult:
+    rng = random.Random(args.seed + 202)
+    history_csv = out_dir / "pso_history.csv"
+    write_csv_header_if_needed(history_csv, ["iteration", "best_channels", "best_fitness", "best_val_acc", "best_params_ratio", "best_flops_ratio"])
+    dims, upper = 3, [len(g) - 1 for g in space]
+    positions = [[rng.uniform(0, upper[d]) for d in range(dims)] for _ in range(args.pso_particles)]
+    velocities = [[0.0] * dims for _ in range(args.pso_particles)]
+    pbest_pos = [p[:] for p in positions]
+    pbest_scores = [-float("inf")] * args.pso_particles
+    gbest_pos, gbest = None, None
+    for it in range(args.pso_iterations):
+        print(f"\n[PSO] Iteration {it + 1}/{args.pso_iterations}")
+        for i in range(args.pso_particles):
+            res = evaluator.evaluate_candidate(decode_position(positions[i], space))
+            if res.fitness > pbest_scores[i]:
+                pbest_scores[i] = res.fitness; pbest_pos[i] = positions[i][:]
+            if gbest is None or res.fitness > gbest.fitness:
+                gbest, gbest_pos = res, positions[i][:]
+        assert gbest is not None and gbest_pos is not None
+        append_csv(history_csv, {"iteration": it + 1, "best_channels": candidate_to_key(gbest.channels), "best_fitness": f"{gbest.fitness:.6f}", "best_val_acc": f"{gbest.val_acc:.4f}", "best_params_ratio": f"{gbest.params_ratio:.6f}", "best_flops_ratio": f"{gbest.flops_ratio:.6f}"})
+        print(f"[PSO] best={candidate_to_key(gbest.channels)} fit={gbest.fitness:.3f} val={gbest.val_acc:.2f}% params↓={gbest.params_compression_rate:.1%} flops↓={gbest.flops_reduction_rate:.1%}")
+        for i in range(args.pso_particles):
+            for d in range(dims):
+                velocities[i][d] = args.pso_w * velocities[i][d] + args.pso_c1 * rng.random() * (pbest_pos[i][d] - positions[i][d]) + args.pso_c2 * rng.random() * (gbest_pos[d] - positions[i][d])
+                positions[i][d] = max(0.0, min(float(upper[d]), positions[i][d] + velocities[i][d]))
+    (out_dir / "pso_best.json").write_text(json.dumps(asdict(gbest), ensure_ascii=False, indent=2), encoding="utf-8")
+    return gbest
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Fast GA/PSO stage-channel search for CIFAR-10 ResNet32 compression")
+    parser.add_argument("--algorithm", choices=["ga", "pso", "both"], default="both")
+    parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--save-dir", default="runs")
+    parser.add_argument("--run-name", default=None)
+    parser.add_argument("--space", default=None)
+    parser.add_argument("--search-epochs", type=int, default=1, help="with weight inheritance, 1 epoch is usually enough for proxy ranking")
+    parser.add_argument("--batch-size", type=int, default=2048)
+    parser.add_argument("--lr", type=float, default=0.02)
+    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--num-workers", type=int, default=8)
+    parser.add_argument("--val-size", type=int, default=5000)
+    parser.add_argument("--max-train-samples", type=int, default=10000)
+    parser.add_argument("--max-val-samples", type=int, default=5000)
+    parser.add_argument("--max-test-samples", type=int, default=None,
+                        help="Compatibility alias for --max-val-samples (older command lines)")
+    parser.add_argument("--baseline-ckpt", default="runs/resnet32_baseline/best.pt")
+    parser.add_argument("--lambda-params", type=float, default=0.05)
+    parser.add_argument("--lambda-flops", type=float, default=0.10)
+    parser.add_argument("--allowed-short-acc-drop", type=float, default=3.0)
+    parser.add_argument("--penalty-mu", type=float, default=5.0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--amp", action="store_true")
+    parser.add_argument("--amp-dtype", default="bf16", choices=["bf16", "fp16"])
+    parser.add_argument("--channels-last", action="store_true")
+    parser.add_argument("--compile", action="store_true", help="may be slower during search because every candidate compiles separately")
+    parser.add_argument("--ga-population", type=int, default=8)
+    parser.add_argument("--ga-generations", type=int, default=5)
+    parser.add_argument("--ga-elites", type=int, default=2)
+    parser.add_argument("--ga-crossover-rate", type=float, default=0.8)
+    parser.add_argument("--ga-mutation-rate", type=float, default=0.25)
+    parser.add_argument("--pso-particles", type=int, default=8)
+    parser.add_argument("--pso-iterations", type=int, default=5)
+    parser.add_argument("--pso-w", type=float, default=0.6)
+    parser.add_argument("--pso-c1", type=float, default=1.4)
+    parser.add_argument("--pso-c2", type=float, default=1.4)
+    args = parser.parse_args()
+
+    # Support older command lines that used --max-test-samples instead of --max-val-samples
+    if getattr(args, "max_test_samples", None) is not None:
+        args.max_val_samples = args.max_test_samples
+
+    setup_torch_fast(tf32=True, benchmark=True)
+    set_seed(args.seed, deterministic=False)
+    space = parse_space(args.space)
+    device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
+    run_name = args.run_name or f"channel_search_fast_{time.strftime('%Y%m%d_%H%M%S')}"
+    out_dir = Path(args.save_dir) / run_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "search_config.json").write_text(json.dumps({**vars(args), "search_space": space, "baseline_channels": list(BASELINE_CHANNELS)}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    evaluator = FitnessEvaluator(args, space, out_dir, device)
+    print("Baseline channels:", candidate_to_key(BASELINE_CHANNELS))
+    print(f"Baseline params: {evaluator.baseline_params} ({human_number(evaluator.baseline_params)})")
+    print(f"Baseline FLOPs : {evaluator.baseline_flops} ({human_number(evaluator.baseline_flops)})")
+    print(f"Baseline-short val acc: {evaluator.baseline_short_acc:.2f}%")
+    print("Search space:", space)
+
+    total_start = time.time(); best_results = {}
+    if args.algorithm in {"ga", "both"}:
+        best_results["ga"] = asdict(run_ga(args, evaluator, space, out_dir))
+    if args.algorithm in {"pso", "both"}:
+        best_results["pso"] = asdict(run_pso(args, evaluator, space, out_dir))
+    best_algorithm, best = max(best_results.items(), key=lambda item: item[1]["fitness"])
+    summary = {"best_algorithm": best_algorithm, "best": best, "all_best": best_results, "baseline_short": asdict(evaluator.baseline_short), "baseline": {"channels": list(BASELINE_CHANNELS), "params": evaluator.baseline_params, "flops": evaluator.baseline_flops}, "num_unique_evaluations": len(evaluator.cache), "total_search_time_sec": time.time() - total_start}
+    (out_dir / "best_result.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    best_ch = best["channels"]
+    cmd = "python train_width_resnet32.py --channels {} --run-name final_{}_{} --epochs 80 --milestones 40,60 --batch-size 1024 --num-workers 8 --amp --amp-dtype bf16 --channels-last --baseline-ckpt {}".format(
+        ",".join(map(str, best_ch)), best_algorithm, candidate_to_key(best_ch), args.baseline_ckpt
+    )
+    (out_dir / "final_train_command.txt").write_text(cmd + "\n", encoding="utf-8")
+    print("\nSearch done.")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print("\nFinal training command:")
+    print(cmd)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: train_resnet32.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import time
+from pathlib import Path
+from typing import Iterable
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+
+from src.data import get_cifar10_loaders
+from src.models import resnet32
+from src.utils.checkpoint import load_checkpoint, save_checkpoint
+from src.utils.metrics import AverageMeter, accuracy, count_parameters, human_number, measure_flops
+from src.utils.seed import set_seed
+from src.utils.accelerate import setup_torch_fast, maybe_channels_last, maybe_compile, move_images, autocast_context, make_grad_scaler
+
+
+def parse_milestones(s: str) -> list[int]:
+    if not s:
+        return []
+    return [int(x.strip()) for x in s.split(",") if x.strip()]
+
+
+
+def train_one_epoch(
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: nn.Module,
+    optimizer: optim.Optimizer,
+    device: torch.device,
+    use_amp: bool,
+) -> tuple[float, float]:
+    model.train()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    scaler = make_grad_scaler(device, use_amp, getattr(model, "_amp_dtype", "bf16"))
+
+    pbar = tqdm(loader, desc="train", leave=False)
+    for images, targets in pbar:
+        images = move_images(images, device, getattr(model, "_channels_last", False))
+        targets = targets.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+        with autocast_context(device, use_amp, getattr(model, "_amp_dtype", "bf16")):
+            outputs = model(images)
+            loss = criterion(outputs, targets)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        acc1 = accuracy(outputs.detach(), targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+        pbar.set_postfix(loss=f"{losses.avg:.4f}", acc=f"{top1.avg:.2f}")
+
+    return losses.avg, top1.avg
+
+
+@torch.no_grad()
+def evaluate(
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+) -> tuple[float, float]:
+    model.eval()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+
+    pbar = tqdm(loader, desc="eval", leave=False)
+    for images, targets in pbar:
+        images = move_images(images, device, getattr(model, "_channels_last", False))
+        targets = targets.to(device, non_blocking=True)
+        outputs = model(images)
+        loss = criterion(outputs, targets)
+        acc1 = accuracy(outputs, targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+        pbar.set_postfix(loss=f"{losses.avg:.4f}", acc=f"{top1.avg:.2f}")
+
+    return losses.avg, top1.avg
+
+
+def write_csv_header_if_needed(path: Path, fields: Iterable[str]) -> None:
+    if not path.exists():
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(fields))
+            writer.writeheader()
+
+
+def append_csv(path: Path, row: dict) -> None:
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        writer.writerow(row)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train standard ResNet32 on CIFAR-10")
+    parser.add_argument("--data-dir", default="data", help="CIFAR-10 data directory")
+    parser.add_argument("--save-dir", default="runs", help="output directory")
+    parser.add_argument("--run-name", default="resnet32_baseline", help="run directory name")
+    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--batch-size", type=int, default=1024)
+    parser.add_argument("--lr", type=float, default=0.1)
+    parser.add_argument("--milestones", type=parse_milestones, default=[100, 150], help="e.g. 100,150")
+    parser.add_argument("--gamma", type=float, default=0.1)
+    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--num-workers", type=int, default=8)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--amp", action="store_true", help="use mixed precision on CUDA")
+    parser.add_argument("--amp-dtype", default="bf16", choices=["bf16", "fp16"])
+    parser.add_argument("--channels-last", action="store_true", help="use NHWC memory format on CUDA")
+    parser.add_argument("--compile", action="store_true", help="use torch.compile for lower overhead")
+    parser.add_argument("--resume", default=None, help="resume from checkpoint")
+    args = parser.parse_args()
+
+    set_seed(args.seed, deterministic=False)
+    setup_torch_fast(tf32=True, benchmark=True)
+    device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
+    use_amp = bool(args.amp and device.type == "cuda")
+
+    out_dir = Path(args.save_dir) / args.run_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    metrics_csv = out_dir / "metrics.csv"
+
+    config = vars(args).copy()
+    config["model"] = "ResNet32"
+    config["dataset"] = "CIFAR-10"
+    config["stage_channels"] = [16, 32, 64]
+    config["blocks_per_stage"] = 5
+
+    train_loader, test_loader = get_cifar10_loaders(args.data_dir, args.batch_size, args.num_workers, seed=args.seed)
+    model = resnet32(num_classes=10).to(device)
+    model = maybe_channels_last(model, args.channels_last)
+    setattr(model, "_channels_last", args.channels_last)
+    setattr(model, "_amp_dtype", args.amp_dtype)
+    train_model = maybe_compile(model, args.compile)
+
+    params = count_parameters(model)
+    flops = measure_flops(model, input_size=(3, 32, 32), device=device)
+    print("Model: standard CIFAR-10 ResNet32")
+    print("Stage channels: 16-32-64")
+    print("Blocks per stage: 5")
+    print(f"Params: {params} ({human_number(params)})")
+    print(f"FLOPs : {flops} ({human_number(flops)})")
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(
+        model.parameters(),
+        lr=args.lr,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay,
+    )
+    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.milestones, gamma=args.gamma)
+
+    start_epoch = 0
+    best_acc = 0.0
+    best_epoch = -1
+
+    if args.resume:
+        ckpt = load_checkpoint(args.resume, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        start_epoch = int(ckpt.get("epoch", 0)) + 1
+        best_acc = float(ckpt.get("best_acc", 0.0))
+        best_epoch = int(ckpt.get("best_epoch", -1))
+        print(f"Resumed from {args.resume} at epoch {start_epoch}")
+
+    fields = [
+        "epoch",
+        "lr",
+        "train_loss",
+        "train_acc",
+        "test_loss",
+        "test_acc",
+        "epoch_time_sec",
+    ]
+    write_csv_header_if_needed(metrics_csv, fields)
+
+    total_start = time.time()
+    for epoch in range(start_epoch, args.epochs):
+        epoch_start = time.time()
+        lr = optimizer.param_groups[0]["lr"]
+        print(f"\nEpoch {epoch + 1}/{args.epochs} | lr={lr:.6f}")
+
+        train_loss, train_acc = train_one_epoch(train_model, train_loader, criterion, optimizer, device, use_amp)
+        test_loss, test_acc = evaluate(train_model, test_loader, criterion, device)
+        scheduler.step()
+        epoch_time = time.time() - epoch_start
+
+        row = {
+            "epoch": epoch + 1,
+            "lr": lr,
+            "train_loss": f"{train_loss:.6f}",
+            "train_acc": f"{train_acc:.4f}",
+            "test_loss": f"{test_loss:.6f}",
+            "test_acc": f"{test_acc:.4f}",
+            "epoch_time_sec": f"{epoch_time:.2f}",
+        }
+        append_csv(metrics_csv, row)
+        print(
+            f"train_loss={train_loss:.4f} train_acc={train_acc:.2f} | "
+            f"test_loss={test_loss:.4f} test_acc={test_acc:.2f} | time={epoch_time:.1f}s"
+        )
+
+        is_best = test_acc > best_acc
+        if is_best:
+            best_acc = test_acc
+            best_epoch = epoch + 1
+
+        ckpt_payload = {
+            "epoch": epoch,
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "best_acc": best_acc,
+            "best_epoch": best_epoch,
+            "config": config,
+            "params": params,
+            "flops": flops,
+        }
+        save_checkpoint(out_dir / "last.pt", **ckpt_payload)
+        if is_best:
+            save_checkpoint(out_dir / "best.pt", **ckpt_payload)
+            print(f"Saved new best checkpoint: acc={best_acc:.2f}%")
+
+    total_time = time.time() - total_start
+    summary = {
+        "run_name": args.run_name,
+        "model": "ResNet32",
+        "dataset": "CIFAR-10",
+        "stage_channels": [16, 32, 64],
+        "blocks_per_stage": 5,
+        "epochs": args.epochs,
+        "best_acc": best_acc,
+        "best_epoch": best_epoch,
+        "params": params,
+        "flops": flops,
+        "total_train_time_sec": total_time,
+        "checkpoint_best": str(out_dir / "best.pt"),
+        "checkpoint_last": str(out_dir / "last.pt"),
+    }
+    with (out_dir / "summary.json").open("w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    print("\nDone.")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: train_width_resnet32.py
+================================================
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import time
+from pathlib import Path
+from typing import Iterable
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+
+from src.data import get_cifar10_loaders
+from src.models import width_resnet32
+from src.utils.checkpoint import load_checkpoint, save_checkpoint, load_sliced_baseline_weights
+from src.utils.metrics import AverageMeter, accuracy, count_parameters, human_number, measure_flops
+from src.utils.seed import set_seed
+from src.utils.accelerate import setup_torch_fast, maybe_channels_last, maybe_compile, move_images, autocast_context, make_grad_scaler
+
+
+def parse_channels(s: str) -> list[int]:
+    values = [int(x.strip()) for x in s.replace("-", ",").split(",") if x.strip()]
+    if len(values) != 3:
+        raise argparse.ArgumentTypeError("channels must contain 3 integers, e.g. 16,24,48 or 16-24-48")
+    return values
+
+
+def parse_milestones(s: str) -> list[int]:
+    if not s:
+        return []
+    return [int(x.strip()) for x in s.split(",") if x.strip()]
+
+
+def write_csv_header_if_needed(path: Path, fields: Iterable[str]) -> None:
+    if not path.exists():
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(fields))
+            writer.writeheader()
+
+
+def append_csv(path: Path, row: dict) -> None:
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        writer.writerow(row)
+
+
+def train_one_epoch(model, loader, criterion, optimizer, device, use_amp: bool) -> tuple[float, float]:
+    model.train()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    scaler = make_grad_scaler(device, use_amp, getattr(model, "_amp_dtype", "bf16"))
+
+    pbar = tqdm(loader, desc="train", leave=False)
+    for images, targets in pbar:
+        images = move_images(images, device, getattr(model, "_channels_last", False))
+        targets = targets.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+        with autocast_context(device, use_amp, getattr(model, "_amp_dtype", "bf16")):
+            outputs = model(images)
+            loss = criterion(outputs, targets)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        acc1 = accuracy(outputs.detach(), targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+        pbar.set_postfix(loss=f"{losses.avg:.4f}", acc=f"{top1.avg:.2f}")
+
+    return losses.avg, top1.avg
+
+
+@torch.no_grad()
+def evaluate(model, loader, criterion, device) -> tuple[float, float]:
+    model.eval()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    pbar = tqdm(loader, desc="eval", leave=False)
+    for images, targets in pbar:
+        images = move_images(images, device, getattr(model, "_channels_last", False))
+        targets = targets.to(device, non_blocking=True)
+        outputs = model(images)
+        loss = criterion(outputs, targets)
+        acc1 = accuracy(outputs, targets, topk=(1,))[0]
+        losses.update(float(loss.item()), images.size(0))
+        top1.update(float(acc1.item()), images.size(0))
+        pbar.set_postfix(loss=f"{losses.avg:.4f}", acc=f"{top1.avg:.2f}")
+    return losses.avg, top1.avg
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train a variable-width ResNet32 candidate on CIFAR-10")
+    parser.add_argument("--channels", type=parse_channels, default=[16, 24, 48], help="stage channels, e.g. 16,24,48")
+    parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--save-dir", default="runs")
+    parser.add_argument("--run-name", default=None)
+    parser.add_argument("--epochs", type=int, default=80)
+    parser.add_argument("--batch-size", type=int, default=1024)
+    parser.add_argument("--lr", type=float, default=0.1)
+    parser.add_argument("--milestones", type=parse_milestones, default=[40, 60], help="e.g. 40,60")
+    parser.add_argument("--gamma", type=float, default=0.1)
+    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--num-workers", type=int, default=8)
+    parser.add_argument("--max-train-samples", type=int, default=0, help="optional subset for quick experiments")
+    parser.add_argument("--max-test-samples", type=int, default=0, help="optional subset for quick experiments")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--amp", action="store_true")
+    parser.add_argument("--amp-dtype", default="bf16", choices=["bf16", "fp16"])
+    parser.add_argument("--channels-last", action="store_true", help="use NHWC memory format on CUDA")
+    parser.add_argument("--compile", action="store_true", help="use torch.compile for lower overhead")
+    parser.add_argument("--baseline-ckpt", default=None, help="optional standard ResNet32 checkpoint for sliced weight inheritance")
+    parser.add_argument("--resume", default=None)
+    args = parser.parse_args()
+
+    set_seed(args.seed, deterministic=False)
+    setup_torch_fast(tf32=True, benchmark=True)
+    device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
+    use_amp = bool(args.amp and device.type == "cuda")
+
+    channel_tag = "-".join(map(str, args.channels))
+    run_name = args.run_name or f"width_resnet32_{channel_tag}"
+    out_dir = Path(args.save_dir) / run_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    metrics_csv = out_dir / "metrics.csv"
+
+    train_loader, test_loader = get_cifar10_loaders(
+        data_dir=args.data_dir,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        max_train_samples=args.max_train_samples,
+        max_test_samples=args.max_test_samples,
+        seed=args.seed,
+    )
+
+    model = width_resnet32(stage_channels=args.channels, num_classes=10).to(device)
+    if args.baseline_ckpt:
+        load_sliced_baseline_weights(model, args.baseline_ckpt, verbose=True)
+    model = maybe_channels_last(model, args.channels_last)
+    setattr(model, "_channels_last", args.channels_last)
+    setattr(model, "_amp_dtype", args.amp_dtype)
+    train_model = maybe_compile(model, args.compile)
+    params = count_parameters(model)
+    flops = measure_flops(model, input_size=(3, 32, 32), device=device)
+
+    print("Model: variable-width CIFAR-10 ResNet32")
+    print(f"Stage channels: {channel_tag}")
+    print("Blocks per stage: 5")
+    print(f"Params: {params} ({human_number(params)})")
+    print(f"FLOPs : {flops} ({human_number(flops)})")
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.milestones, gamma=args.gamma)
+
+    start_epoch = 0
+    best_acc = 0.0
+    best_epoch = -1
+
+    config = vars(args).copy()
+    config["model"] = "WidthResNet32"
+    config["dataset"] = "CIFAR-10"
+    config["stage_channels"] = args.channels
+    config["blocks_per_stage"] = 5
+
+    if args.resume:
+        ckpt = load_checkpoint(args.resume, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        start_epoch = int(ckpt.get("epoch", 0)) + 1
+        best_acc = float(ckpt.get("best_acc", 0.0))
+        best_epoch = int(ckpt.get("best_epoch", -1))
+        print(f"Resumed from {args.resume} at epoch {start_epoch}")
+
+    fields = ["epoch", "lr", "train_loss", "train_acc", "test_loss", "test_acc", "epoch_time_sec"]
+    write_csv_header_if_needed(metrics_csv, fields)
+
+    total_start = time.time()
+    for epoch in range(start_epoch, args.epochs):
+        epoch_start = time.time()
+        lr = optimizer.param_groups[0]["lr"]
+        print(f"\nEpoch {epoch + 1}/{args.epochs} | lr={lr:.6f}")
+
+        train_loss, train_acc = train_one_epoch(train_model, train_loader, criterion, optimizer, device, use_amp)
+        test_loss, test_acc = evaluate(train_model, test_loader, criterion, device)
+        scheduler.step()
+        epoch_time = time.time() - epoch_start
+
+        row = {
+            "epoch": epoch + 1,
+            "lr": lr,
+            "train_loss": f"{train_loss:.6f}",
+            "train_acc": f"{train_acc:.4f}",
+            "test_loss": f"{test_loss:.6f}",
+            "test_acc": f"{test_acc:.4f}",
+            "epoch_time_sec": f"{epoch_time:.2f}",
+        }
+        append_csv(metrics_csv, row)
+        print(
+            f"train_loss={train_loss:.4f} train_acc={train_acc:.2f} | "
+            f"test_loss={test_loss:.4f} test_acc={test_acc:.2f} | time={epoch_time:.1f}s"
+        )
+
+        is_best = test_acc > best_acc
+        if is_best:
+            best_acc = test_acc
+            best_epoch = epoch + 1
+
+        payload = {
+            "epoch": epoch,
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "best_acc": best_acc,
+            "best_epoch": best_epoch,
+            "config": config,
+            "params": params,
+            "flops": flops,
+        }
+        save_checkpoint(out_dir / "last.pt", **payload)
+        if is_best:
+            save_checkpoint(out_dir / "best.pt", **payload)
+            print(f"Saved new best checkpoint: acc={best_acc:.2f}%")
+
+    total_time = time.time() - total_start
+    summary = {
+        "run_name": run_name,
+        "model": "WidthResNet32",
+        "dataset": "CIFAR-10",
+        "stage_channels": args.channels,
+        "blocks_per_stage": 5,
+        "epochs": args.epochs,
+        "best_acc": best_acc,
+        "best_epoch": best_epoch,
+        "params": params,
+        "flops": flops,
+        "total_train_time_sec": total_time,
+        "checkpoint_best": str(out_dir / "best.pt"),
+        "checkpoint_last": str(out_dir / "last.pt"),
+    }
+    with (out_dir / "summary.json").open("w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    print("\nDone.")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: data/cifar-10-batches-py/readme.html
+================================================
+<meta HTTP-EQUIV="REFRESH" content="0; url=http://www.cs.toronto.edu/~kriz/cifar.html">
+
+
+
+================================================
+FILE: data/cifar-10-batches-py/batches.meta
+================================================
+[Binary file]
+
+
+================================================
+FILE: docs/experiment_plan.md
+================================================
+[Binary file]
+
+
+================================================
+FILE: docs/h100_fast_notes.md
+================================================
+# H100 加速版改动说明
+
+本版重点解决 ResNet32/CIFAR-10 在 H100 上显存占用低、GPU 吃不满、搜索很慢的问题。
+
+## 已改动
+
+1. 默认 batch size 提高到 1024/2048。
+2. DataLoader 默认 num_workers=8，并启用 persistent_workers、prefetch_factor、pin_memory。
+3. 新增 BF16 AMP：`--amp --amp-dtype bf16`。
+4. 新增 channels_last：`--channels-last`。
+5. 新增 TF32/cudnn benchmark 设置。
+6. 新增可选 `--compile`，但搜索阶段默认不建议开，因为每个 candidate 都会重新编译。
+7. 搜索阶段新增 baseline checkpoint 权重继承：`--baseline-ckpt runs/resnet32_baseline/best.pt`。
+8. 搜索阶段改为 train/val split，不再用 test set 作为 fitness。
+9. fitness 改为 baseline-short 约束，避免 GA/PSO 只选择极小模型。
+10. 默认搜索空间改保守：`{12,16};{20,24,28,32};{40,48,56,64}`。
+
+## 推荐命令
+
+先保证 baseline checkpoint 存在：
+
+```bash
+bash scripts/run_h100_baseline_fast.sh
+```
+
+如果已经有 `runs/resnet32_baseline/best.pt`，可直接搜索：
+
+```bash
+bash scripts/run_h100_search_fast.sh
+```
+
+搜索完成后，查看：
+
+```bash
+cat runs/channel_search_fast_*/final_train_command.txt
+```
+
+然后复制该命令训练最终压缩模型。
+
+## 注意
+
+`torch.compile` 对最终训练可能有效，但对搜索阶段不一定有效，因为每个候选模型都要单独编译，可能反而变慢。
+
+
+
+================================================
+FILE: docs/next_ga_pso_plan.md
+================================================
+[Binary file]
+
+
+================================================
+FILE: docs/optimization_model.md
+================================================
+# GA/PSO 通道配置搜索：优化问题建模
+
+## 1. 问题描述
+
+在标准 CIFAR-10 ResNet32 中，原始通道配置为：
+
+```text
+x0 = [16, 32, 64]
+```
+
+本文保持 ResNet32 的深度结构不变，即每个 stage 仍然包含 5 个 residual blocks，只搜索三个 stage 的通道数：
+
+```text
+x = [c1, c2, c3]
+```
+
+因此，该方法属于结构化通道宽度压缩，而不是改变网络深度或替换网络结构。
+
+---
+
+## 2. 变量空间
+
+默认搜索空间：
+
+```text
+c1 ∈ {8, 12, 16}
+c2 ∈ {16, 20, 24, 28, 32}
+c3 ∈ {32, 40, 48, 56, 64}
+```
+
+其中：
+
+```text
+c1：stage1 的通道数
+c2：stage2 的通道数
+c3：stage3 的通道数
+```
+
+原始 ResNet32 是搜索空间中的一个特殊解：
+
+```text
+x0 = [16, 32, 64]
+```
+
+---
+
+## 3. 优化目标
+
+目标是在尽可能降低参数量和 FLOPs 的同时保持分类精度。
+
+单目标适应度函数定义为：
+
+```text
+Fitness(x) = Acc(x) - 100 * [ λp * Params(x)/Params0 + λf * FLOPs(x)/FLOPs0 ]
+```
+
+其中：
+
+```text
+Acc(x)：候选通道配置 x 对应模型的验证准确率
+Params(x)：候选模型参数量
+FLOPs(x)：候选模型单张图片前向计算量
+Params0：原始 ResNet32 参数量
+FLOPs0：原始 ResNet32 FLOPs
+λp：参数量惩罚系数
+λf：FLOPs 惩罚系数
+```
+
+适应度越大，说明该配置在精度和压缩率之间的综合表现越好。
+
+---
+
+## 4. 判定条件
+
+一个候选解是否更优，主要看：
+
+```text
+1. Fitness 是否更高
+2. Accuracy 是否明显下降
+3. Params compression rate 是否更高
+4. FLOPs reduction rate 是否更高
+5. 搜索和训练时间是否可接受
+```
+
+实际报告中应优先选择：
+
+```text
+精度下降较小，但参数量和 FLOPs 有明显下降的通道配置。
+```
+
+---
+
+## 5. GA 选择理由
+
+遗传算法适合离散组合优化。本任务中的通道配置 `[c1, c2, c3]` 来自有限候选集合，天然适合编码为染色体。GA 通过选择、交叉、变异在离散空间中搜索较优配置。
+
+---
+
+## 6. PSO 选择理由
+
+粒子群优化具有实现简单、收敛速度较快的特点。虽然原始 PSO 面向连续空间，但可将粒子位置映射到离散通道索引，从而用于本任务的通道配置搜索。与 GA 对比，可以观察两种计算智能优化算法在搜索效率和结果质量上的差异。
+
+
+
+================================================
+FILE: runs/final_comparison.json
+================================================
+{
+  "baseline_run": "resnet32_baseline",
+  "compressed_run": "final_pso_16-24-56",
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ],
+  "compressed_channels": [
+    16,
+    24,
+    56
+  ],
+  "baseline_best_acc": 93.11,
+  "compressed_best_acc": 92.17999990234375,
+  "accuracy_drop": 0.9300000976562472,
+  "baseline_params": 464154,
+  "compressed_params": 342218,
+  "params_compression_rate": 0.26270591226187856,
+  "baseline_flops": 68862592,
+  "compressed_flops": 53895728,
+  "flops_reduction_rate": 0.21734389550715716,
+  "baseline_train_time_sec": 1289.5462594032288,
+  "compressed_train_time_sec": 172.47587203979492
+}
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_135213/search_config.json
+================================================
+{
+  "algorithm": "both",
+  "data_dir": "data",
+  "save_dir": "runs",
+  "run_name": null,
+  "space": null,
+  "search_epochs": 3,
+  "batch_size": 2048,
+  "lr": 0.02,
+  "momentum": 0.9,
+  "weight_decay": 0.0001,
+  "num_workers": 8,
+  "val_size": 5000,
+  "max_train_samples": 5000,
+  "max_val_samples": 2000,
+  "max_test_samples": 2000,
+  "baseline_ckpt": "runs/resnet32_baseline/best.pt",
+  "lambda_params": 0.05,
+  "lambda_flops": 0.1,
+  "allowed_short_acc_drop": 3.0,
+  "penalty_mu": 5.0,
+  "seed": 42,
+  "device": "cuda",
+  "amp": true,
+  "amp_dtype": "bf16",
+  "channels_last": false,
+  "compile": false,
+  "ga_population": 8,
+  "ga_generations": 5,
+  "ga_elites": 2,
+  "ga_crossover_rate": 0.8,
+  "ga_mutation_rate": 0.25,
+  "pso_particles": 8,
+  "pso_iterations": 5,
+  "pso_w": 0.6,
+  "pso_c1": 1.4,
+  "pso_c2": 1.4,
+  "search_space": [
+    [
+      12,
+      16
+    ],
+    [
+      20,
+      24,
+      28,
+      32
+    ],
+    [
+      40,
+      48,
+      56,
+      64
+    ]
+  ],
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ]
+}
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_135414/best_result.json
+================================================
+{
+  "best_algorithm": "ga",
+  "best": {
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "fitness": 84.9000015258789,
+    "val_acc": 99.9000015258789,
+    "train_acc": 99.98,
+    "val_loss": 0.00391602236777544,
+    "train_loss": 0.004914337707310915,
+    "params": 464154,
+    "flops": 68862592,
+    "params_ratio": 1.0,
+    "flops_ratio": 1.0,
+    "params_compression_rate": 0.0,
+    "flops_reduction_rate": 0.0,
+    "below_baseline_short_by": 0.0,
+    "penalty": 0.0,
+    "eval_time_sec": 3.7947752475738525,
+    "epochs": 3,
+    "inherited": true
+  },
+  "all_best": {
+    "ga": {
+      "channels": [
+        16,
+        32,
+        64
+      ],
+      "fitness": 84.9000015258789,
+      "val_acc": 99.9000015258789,
+      "train_acc": 99.98,
+      "val_loss": 0.00391602236777544,
+      "train_loss": 0.004914337707310915,
+      "params": 464154,
+      "flops": 68862592,
+      "params_ratio": 1.0,
+      "flops_ratio": 1.0,
+      "params_compression_rate": 0.0,
+      "flops_reduction_rate": 0.0,
+      "below_baseline_short_by": 0.0,
+      "penalty": 0.0,
+      "eval_time_sec": 3.7947752475738525,
+      "epochs": 3,
+      "inherited": true
+    },
+    "pso": {
+      "channels": [
+        16,
+        32,
+        64
+      ],
+      "fitness": 84.9000015258789,
+      "val_acc": 99.9000015258789,
+      "train_acc": 99.98,
+      "val_loss": 0.00391602236777544,
+      "train_loss": 0.004914337707310915,
+      "params": 464154,
+      "flops": 68862592,
+      "params_ratio": 1.0,
+      "flops_ratio": 1.0,
+      "params_compression_rate": 0.0,
+      "flops_reduction_rate": 0.0,
+      "below_baseline_short_by": 0.0,
+      "penalty": 0.0,
+      "eval_time_sec": 3.7947752475738525,
+      "epochs": 3,
+      "inherited": true
+    }
+  },
+  "baseline_short": {
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "fitness": 84.9000015258789,
+    "val_acc": 99.9000015258789,
+    "train_acc": 99.98,
+    "val_loss": 0.00391602236777544,
+    "train_loss": 0.004914337707310915,
+    "params": 464154,
+    "flops": 68862592,
+    "params_ratio": 1.0,
+    "flops_ratio": 1.0,
+    "params_compression_rate": 0.0,
+    "flops_reduction_rate": 0.0,
+    "below_baseline_short_by": 0.0,
+    "penalty": 0.0,
+    "eval_time_sec": 8.81320333480835,
+    "epochs": 3,
+    "inherited": true
+  },
+  "baseline": {
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "params": 464154,
+    "flops": 68862592
+  },
+  "num_unique_evaluations": 20,
+  "total_search_time_sec": 84.75125646591187
+}
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_135414/evaluations.csv
+================================================
+channels,fitness,val_acc,train_acc,val_loss,train_loss,params,flops,params_ratio,flops_ratio,params_compression_rate,flops_reduction_rate,below_baseline_short_by,penalty,eval_time_sec,epochs,inherited
+12-20-40,-386.3408289913309,17.450000762939453,34.980000299072266,2.4149112701416016,2.0778035995483397,186518,31205776,0.4018450772803854,0.4531600553171162,0.5981549227196146,0.5468399446828838,79.45000076293945,397.25000381469727,6.85834527015686,3,True
+12-24-48,-431.75637240831463,10.199999809265137,36.720000323486325,2.5427207946777344,2.3240620807647705,261718,38818272,0.5638602705136657,0.5637062281942568,0.4361397294863343,0.43629377180574325,86.70000171661377,433.50000858306885,4.355440616607666,3,True
+12-32-64,-157.61909599070285,56.70000076293945,81.63999954833984,2.3736860752105713,0.7838699372291565,452726,58135168,0.9753788613261978,0.8442198632314044,0.024621138673802223,0.1557801367685956,40.20000076293945,201.00000381469727,4.363102674484253,3,True
+12-24-40,-400.87484400228493,15.15000057220459,35.559999841308596,2.288900375366211,2.1622588603973387,202726,35058064,0.4367645221198137,0.5091017195518868,0.5632354778801862,0.49089828044811323,81.75000095367432,408.7500047683716,3.849675416946411,3,True
+16-32-40,-215.39661491887426,46.650001525878906,58.579999926757814,1.8615659475326538,1.2794261373519897,254346,55480720,0.5479776108791479,0.8056728390357424,0.45202238912085213,0.19432716096425762,50.25,251.25,3.8468868732452393,3,True
+16-32-64,84.9000015258789,99.9000015258789,99.98,0.00391602236777544,0.004914337707310915,464154,68862592,1.0,1.0,0.0,0.0,0.0,0.0,3.7947752475738525,3,True
+12-28-56,-314.0157890193927,30.200000762939453,63.82000001220703,3.2810826301574707,1.4919712158203124,350454,47794736,0.7550381985289365,0.6940594974990195,0.2449618014710635,0.3059405025009805,66.70000076293945,333.50000381469727,4.429249048233032,3,True
+16-32-48,-169.78970143139634,54.45000076293945,70.72000056152343,1.9238115549087524,0.9594982473373413,313914,59277792,0.6763143267105314,0.8608126746085887,0.3236856732894686,0.13918732539141132,42.45000076293945,212.25000381469727,4.1969780921936035,3,True
+12-32-56,-351.90991993327196,24.05000114440918,59.3000003112793,3.013646125793457,1.6679752626419067,372422,53010992,0.8023673177436799,0.7698082581614122,0.19763268225632014,0.23019174183858782,72.85000038146973,364.25000190734863,4.155226230621338,3,True
+12-32-48,-419.8087989479781,12.5,44.92000008544922,4.8173604011535645,2.0262530752182006,302486,48550368,0.6516931880367292,0.705032537839993,0.34830681196327085,0.294967462160007,84.4000015258789,422.00000762939453,3.85636568069458,3,True
+12-32-40,-422.8157158686835,11.800000190734863,39.36000034179688,3.878706455230713,1.9570267068862914,242918,44753296,0.5233564722053456,0.6498927022671467,0.47664352779465435,0.3501072977328533,85.10000133514404,425.5000066757202,3.7889702320098877,3,True
+16-32-56,-49.69080639496171,74.70000457763672,82.039999609375,1.0267524719238281,0.6163966510772705,383850,63738416,0.8269884564174821,0.9255883949300079,0.1730115435825179,0.07441160506999211,22.199996948242188,110.99998474121094,3.754300594329834,3,True
+16-28-56,-217.5898007571194,46.54999923706055,63.93999958496094,2.0290865898132324,1.4769549461364746,361738,58485296,0.7793490953433558,0.8493043073371389,0.22065090465664416,0.1506956926628611,50.35000228881836,251.7500114440918,4.305618524551392,3,True
+12-28-40,-351.6331419168875,23.5,44.299999987792965,2.318852424621582,1.7838689441680908,221526,39573904,0.4772683204281338,0.5746792685352303,0.5227316795718662,0.4253207314647697,73.4000015258789,367.00000762939453,4.326655149459839,3,True
+12-20-48,-433.11657605529604,9.850000381469727,37.84000021972656,3.4058282375335693,2.191842056274414,245222,34947552,0.5283203419554717,0.507496900494248,0.47167965804452827,0.492503099505752,87.05000114440918,435.2500057220459,3.9692366123199463,3,True
+16-24-48,-351.2234716565754,23.899999618530273,45.68000040893555,5.458417892456055,2.0145788955688477,272858,49471968,0.5878609254687022,0.7184157111018998,0.41213907453129783,0.28158428889810017,73.00000190734863,365.00000953674316,4.440657138824463,3,True
+16-24-64,-194.91065019749692,50.45000076293945,71.34000031738282,3.2057790756225586,1.2975690935134887,421946,58983040,0.9090646638831078,0.8565323826323586,0.0909353361168922,0.14346761736764135,46.45000076293945,232.25000381469727,4.1237664222717285,3,True
+16-28-64,-78.493190894849,70.0,77.38000048828125,1.3860349655151367,0.9725918912887573,441754,63591040,0.951740155207108,0.9234482489418928,0.048259844792892026,0.07655175105810719,26.900001525878906,134.50000762939453,3.8218331336975098,3,True
+12-24-56,-389.9459432979803,17.399999618530273,54.5400000793457,3.445659637451172,1.9039898607254029,331078,43242032,0.7132934327830849,0.6279466215851996,0.2867065672169151,0.37205337841480035,79.50000190734863,397.50000953674316,4.512687921524048,3,True
+16-24-56,-208.01303911301358,48.0,68.17999965820313,2.8908472061157227,1.241477515220642,342218,53895728,0.7372940877381214,0.7826561044928428,0.26270591226187856,0.21734389550715716,48.900001525878906,244.50000762939453,3.9403576850891113,3,True
+
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_135414/final_train_command.txt
+================================================
+python train_width_resnet32.py --channels 16,32,64 --run-name final_ga_16-32-64 --epochs 80 --milestones 40,60 --batch-size 1024 --num-workers 8 --amp --amp-dtype bf16 --channels-last --baseline-ckpt runs/resnet32_baseline/best.pt
+
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_135414/ga_best.json
+================================================
+{
+  "channels": [
+    16,
+    32,
+    64
+  ],
+  "fitness": 84.9000015258789,
+  "val_acc": 99.9000015258789,
+  "train_acc": 99.98,
+  "val_loss": 0.00391602236777544,
+  "train_loss": 0.004914337707310915,
+  "params": 464154,
+  "flops": 68862592,
+  "params_ratio": 1.0,
+  "flops_ratio": 1.0,
+  "params_compression_rate": 0.0,
+  "flops_reduction_rate": 0.0,
+  "below_baseline_short_by": 0.0,
+  "penalty": 0.0,
+  "eval_time_sec": 3.7947752475738525,
+  "epochs": 3,
+  "inherited": true
+}
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_135414/ga_history.csv
+================================================
+generation,best_channels,best_fitness,best_val_acc,best_params_ratio,best_flops_ratio
+1,16-32-64,84.900002,99.9000,1.000000,1.000000
+2,16-32-64,84.900002,99.9000,1.000000,1.000000
+3,16-32-64,84.900002,99.9000,1.000000,1.000000
+4,16-32-64,84.900002,99.9000,1.000000,1.000000
+5,16-32-64,84.900002,99.9000,1.000000,1.000000
+
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_135414/pso_best.json
+================================================
+{
+  "channels": [
+    16,
+    32,
+    64
+  ],
+  "fitness": 84.9000015258789,
+  "val_acc": 99.9000015258789,
+  "train_acc": 99.98,
+  "val_loss": 0.00391602236777544,
+  "train_loss": 0.004914337707310915,
+  "params": 464154,
+  "flops": 68862592,
+  "params_ratio": 1.0,
+  "flops_ratio": 1.0,
+  "params_compression_rate": 0.0,
+  "flops_reduction_rate": 0.0,
+  "below_baseline_short_by": 0.0,
+  "penalty": 0.0,
+  "eval_time_sec": 3.7947752475738525,
+  "epochs": 3,
+  "inherited": true
+}
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_135414/pso_history.csv
+================================================
+iteration,best_channels,best_fitness,best_val_acc,best_params_ratio,best_flops_ratio
+1,16-24-64,-194.910650,50.4500,0.909065,0.856532
+2,16-28-64,-78.493191,70.0000,0.951740,0.923448
+3,16-28-64,-78.493191,70.0000,0.951740,0.923448
+4,16-32-64,84.900002,99.9000,1.000000,1.000000
+5,16-32-64,84.900002,99.9000,1.000000,1.000000
+
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_135414/search_config.json
+================================================
+{
+  "algorithm": "both",
+  "data_dir": "data",
+  "save_dir": "runs",
+  "run_name": null,
+  "space": null,
+  "search_epochs": 3,
+  "batch_size": 2048,
+  "lr": 0.02,
+  "momentum": 0.9,
+  "weight_decay": 0.0001,
+  "num_workers": 8,
+  "val_size": 5000,
+  "max_train_samples": 5000,
+  "max_val_samples": 2000,
+  "max_test_samples": 2000,
+  "baseline_ckpt": "runs/resnet32_baseline/best.pt",
+  "lambda_params": 0.05,
+  "lambda_flops": 0.1,
+  "allowed_short_acc_drop": 3.0,
+  "penalty_mu": 5.0,
+  "seed": 42,
+  "device": "cuda",
+  "amp": true,
+  "amp_dtype": "bf16",
+  "channels_last": false,
+  "compile": false,
+  "ga_population": 8,
+  "ga_generations": 5,
+  "ga_elites": 2,
+  "ga_crossover_rate": 0.8,
+  "ga_mutation_rate": 0.25,
+  "pso_particles": 8,
+  "pso_iterations": 5,
+  "pso_w": 0.6,
+  "pso_c1": 1.4,
+  "pso_c2": 1.4,
+  "search_space": [
+    [
+      12,
+      16
+    ],
+    [
+      20,
+      24,
+      28,
+      32
+    ],
+    [
+      40,
+      48,
+      56,
+      64
+    ]
+  ],
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ]
+}
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_141259/best_result.json
+================================================
+{
+  "best_algorithm": "pso",
+  "best": {
+    "channels": [
+      16,
+      24,
+      56
+    ],
+    "fitness": 30.94696843093174,
+    "val_acc": 42.45999991455078,
+    "train_acc": 44.27999993896484,
+    "val_loss": 2.4502038860321047,
+    "train_loss": 2.752825197029114,
+    "params": 342218,
+    "flops": 53895728,
+    "params_ratio": 0.7372940877381214,
+    "flops_ratio": 0.7826561044928428,
+    "params_compression_rate": 0.26270591226187856,
+    "flops_reduction_rate": 0.21734389550715716,
+    "below_baseline_short_by": 0.0,
+    "penalty": 0.0,
+    "eval_time_sec": 1.2725598812103271,
+    "epochs": 1,
+    "inherited": true
+  },
+  "all_best": {
+    "ga": {
+      "channels": [
+        16,
+        28,
+        48
+      ],
+      "fitness": 17.14556036438136,
+      "val_acc": 28.140000115966796,
+      "train_acc": 32.16999975585937,
+      "val_loss": 2.444228709793091,
+      "train_loss": 3.1222705909729003,
+      "params": 292090,
+      "flops": 54043104,
+      "params_ratio": 0.6292954493551709,
+      "flops_ratio": 0.7847962504809578,
+      "params_compression_rate": 0.3707045506448291,
+      "flops_reduction_rate": 0.2152037495190422,
+      "below_baseline_short_by": 0.0,
+      "penalty": 0.0,
+      "eval_time_sec": 1.2392847537994385,
+      "epochs": 1,
+      "inherited": true
+    },
+    "pso": {
+      "channels": [
+        16,
+        24,
+        56
+      ],
+      "fitness": 30.94696843093174,
+      "val_acc": 42.45999991455078,
+      "train_acc": 44.27999993896484,
+      "val_loss": 2.4502038860321047,
+      "train_loss": 2.752825197029114,
+      "params": 342218,
+      "flops": 53895728,
+      "params_ratio": 0.7372940877381214,
+      "flops_ratio": 0.7826561044928428,
+      "params_compression_rate": 0.26270591226187856,
+      "flops_reduction_rate": 0.21734389550715716,
+      "below_baseline_short_by": 0.0,
+      "penalty": 0.0,
+      "eval_time_sec": 1.2725598812103271,
+      "epochs": 1,
+      "inherited": true
+    }
+  },
+  "baseline_short": {
+    "channels": [
+      16,
+      28,
+      56
+    ],
+    "fitness": 13.17021142244601,
+    "val_acc": 25.55999997253418,
+    "train_acc": 38.8999999633789,
+    "val_loss": 2.869422696685791,
+    "train_loss": 3.275646207046509,
+    "params": 361738,
+    "flops": 58485296,
+    "params_ratio": 0.7793490953433558,
+    "flops_ratio": 0.8493043073371389,
+    "params_compression_rate": 0.22065090465664416,
+    "flops_reduction_rate": 0.1506956926628611,
+    "below_baseline_short_by": 0.0,
+    "penalty": 0.0,
+    "eval_time_sec": 14.489546298980713,
+    "epochs": 1,
+    "inherited": true
+  },
+  "baseline": {
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "params": 464154,
+    "flops": 68862592
+  },
+  "num_unique_evaluations": 14,
+  "total_search_time_sec": 55.96725654602051
+}
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_141259/evaluations.csv
+================================================
+channels,fitness,val_acc,train_acc,val_loss,train_loss,params,flops,params_ratio,flops_ratio,params_compression_rate,flops_reduction_rate,below_baseline_short_by,penalty,eval_time_sec,epochs,inherited
+12-20-40,-50.70082616845492,11.439999938964844,21.960000048828125,2.7028199131011963,3.5248485637664797,186518,31205776,0.4018450772803854,0.4531600553171162,0.5981549227196146,0.5468399446828838,11.120000033569335,55.60000016784667,12.880250215530396,1,True
+12-28-48,-25.52043721490851,16.099999969482422,32.85999995727539,3.3833303562164305,3.033808525848389,280806,43352544,0.6049845525407516,0.6295514406428384,0.39501544745924844,0.3704485593571616,6.460000003051757,32.30000001525879,7.777695655822754,1,True
+16-20-56,2.679444830690805,21.03999995422363,23.260000415039062,3.485954943084717,4.2353129474639895,325290,49969712,0.7008234336017787,0.7256437863971197,0.2991765663982213,0.2743562136028803,1.5200000183105473,7.600000091552737,4.881820917129517,1,True
+12-20-56,-36.94036147997234,14.159999964904785,25.209999841308594,2.7947591621398926,4.182624881362915,314294,39352880,0.6771330205061251,0.5714696304199528,0.3228669794938749,0.4285303695800472,8.400000007629394,42.00000003814697,1.2818951606750488,1,True
+16-24-40,-30.06193766277716,15.280000018310547,21.330000076293945,3.0630309700012206,3.733375751876831,213866,45711760,0.46076517707485015,0.6638112024595298,0.5392348229251498,0.33618879754047015,7.279999954223632,36.39999977111816,9.133305072784424,1,True
+16-28-48,17.14556036438136,28.140000115966796,32.16999975585937,2.444228709793091,3.1222705909729003,292090,54043104,0.6292954493551709,0.7847962504809578,0.3707045506448291,0.2152037495190422,0.0,0.0,1.2392847537994385,1,True
+16-28-56,13.17021142244601,25.55999997253418,38.8999999633789,2.869422696685791,3.275646207046509,361738,58485296,0.7793490953433558,0.8493043073371389,0.22065090465664416,0.1506956926628611,0.0,0.0,1.2757618427276611,1,True
+16-24-48,12.076537703165824,22.499999884033205,25.400000054931642,7.173235774993897,3.7026342723846435,272858,49471968,0.5878609254687022,0.7184157111018998,0.41213907453129783,0.28158428889810017,0.06000008850097416,0.3000004425048708,3.7327146530151367,1,True
+12-24-56,-63.00593306848812,9.9400000289917,31.089999841308593,2.6839117023468018,3.6654970066070556,331078,43242032,0.7132934327830849,0.6279466215851996,0.2867065672169151,0.37205337841480035,12.61999994354248,63.0999997177124,5.532127380371094,1,True
+16-20-48,12.10323621850191,22.38000007019043,22.570000091552735,2.6522888675689695,3.7816145877838134,256218,45564384,0.5520107550511253,0.6616710564714149,0.4479892449488747,0.3383289435285851,0.17999990234374863,0.8999995117187432,3.1137053966522217,1,True
+12-28-56,11.90421394996766,22.619999917602538,42.06000034179687,3.7850425457000734,2.8376885883331298,350454,47794736,0.7550381985289365,0.6940594974990195,0.2449618014710635,0.3059405025009805,0.0,0.0,1.2734582424163818,1,True
+12-24-40,-55.63483987020484,10.739999966430664,21.980000128173828,2.3902972476959228,3.568091106414795,202726,35058064,0.4367645221198137,0.5091017195518868,0.5632354778801862,0.49089828044811323,11.820000006103514,59.10000003051757,1.2478597164154053,1,True
+12-20-48,-33.39657045837218,14.520000019836425,21.130000189208985,2.8714941505432128,3.849154708480835,245222,34947552,0.5283203419554717,0.507496900494248,0.47167965804452827,0.492503099505752,8.039999952697753,40.19999976348877,1.2729907035827637,1,True
+16-24-56,30.94696843093174,42.45999991455078,44.27999993896484,2.4502038860321047,2.752825197029114,342218,53895728,0.7372940877381214,0.7826561044928428,0.26270591226187856,0.21734389550715716,0.0,0.0,1.2725598812103271,1,True
+
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_141259/final_train_command.txt
+================================================
+python train_width_resnet32.py --channels 16,24,56 --run-name final_pso_16-24-56 --epochs 80 --milestones 40,60 --batch-size 1024 --num-workers 8 --amp --amp-dtype bf16 --channels-last --baseline-ckpt runs/resnet32_baseline/best.pt
+
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_141259/ga_best.json
+================================================
+{
+  "channels": [
+    16,
+    28,
+    48
+  ],
+  "fitness": 17.14556036438136,
+  "val_acc": 28.140000115966796,
+  "train_acc": 32.16999975585937,
+  "val_loss": 2.444228709793091,
+  "train_loss": 3.1222705909729003,
+  "params": 292090,
+  "flops": 54043104,
+  "params_ratio": 0.6292954493551709,
+  "flops_ratio": 0.7847962504809578,
+  "params_compression_rate": 0.3707045506448291,
+  "flops_reduction_rate": 0.2152037495190422,
+  "below_baseline_short_by": 0.0,
+  "penalty": 0.0,
+  "eval_time_sec": 1.2392847537994385,
+  "epochs": 1,
+  "inherited": true
+}
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_141259/ga_history.csv
+================================================
+generation,best_channels,best_fitness,best_val_acc,best_params_ratio,best_flops_ratio
+1,16-28-48,17.145560,28.1400,0.629295,0.784796
+2,16-28-48,17.145560,28.1400,0.629295,0.784796
+3,16-28-48,17.145560,28.1400,0.629295,0.784796
+4,16-28-48,17.145560,28.1400,0.629295,0.784796
+5,16-28-48,17.145560,28.1400,0.629295,0.784796
+
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_141259/pso_best.json
+================================================
+{
+  "channels": [
+    16,
+    24,
+    56
+  ],
+  "fitness": 30.94696843093174,
+  "val_acc": 42.45999991455078,
+  "train_acc": 44.27999993896484,
+  "val_loss": 2.4502038860321047,
+  "train_loss": 2.752825197029114,
+  "params": 342218,
+  "flops": 53895728,
+  "params_ratio": 0.7372940877381214,
+  "flops_ratio": 0.7826561044928428,
+  "params_compression_rate": 0.26270591226187856,
+  "flops_reduction_rate": 0.21734389550715716,
+  "below_baseline_short_by": 0.0,
+  "penalty": 0.0,
+  "eval_time_sec": 1.2725598812103271,
+  "epochs": 1,
+  "inherited": true
+}
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_141259/pso_history.csv
+================================================
+iteration,best_channels,best_fitness,best_val_acc,best_params_ratio,best_flops_ratio
+1,16-24-56,30.946968,42.4600,0.737294,0.782656
+2,16-24-56,30.946968,42.4600,0.737294,0.782656
+3,16-24-56,30.946968,42.4600,0.737294,0.782656
+4,16-24-56,30.946968,42.4600,0.737294,0.782656
+5,16-24-56,30.946968,42.4600,0.737294,0.782656
+
+
+
+================================================
+FILE: runs/channel_search_fast_20260525_141259/search_config.json
+================================================
+{
+  "algorithm": "both",
+  "data_dir": "data",
+  "save_dir": "runs",
+  "run_name": null,
+  "space": "12,16;20,24,28;40,48,56",
+  "search_epochs": 1,
+  "batch_size": 2048,
+  "lr": 0.02,
+  "momentum": 0.9,
+  "weight_decay": 0.0001,
+  "num_workers": 8,
+  "val_size": 5000,
+  "max_train_samples": 10000,
+  "max_val_samples": 5000,
+  "max_test_samples": null,
+  "baseline_ckpt": "runs/resnet32_baseline/best.pt",
+  "lambda_params": 0.05,
+  "lambda_flops": 0.1,
+  "allowed_short_acc_drop": 3.0,
+  "penalty_mu": 5.0,
+  "seed": 42,
+  "device": "cuda",
+  "amp": true,
+  "amp_dtype": "bf16",
+  "channels_last": true,
+  "compile": false,
+  "ga_population": 8,
+  "ga_generations": 5,
+  "ga_elites": 2,
+  "ga_crossover_rate": 0.8,
+  "ga_mutation_rate": 0.25,
+  "pso_particles": 8,
+  "pso_iterations": 5,
+  "pso_w": 0.6,
+  "pso_c1": 1.4,
+  "pso_c2": 1.4,
+  "search_space": [
+    [
+      12,
+      16
+    ],
+    [
+      20,
+      24,
+      28
+    ],
+    [
+      40,
+      48,
+      56
+    ]
+  ],
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ]
+}
+
+
+================================================
+FILE: runs/debug_bootstrap_135326/evaluations.csv
+================================================
+channels,fitness,val_acc,train_acc,val_loss,train_loss,params,flops,params_ratio,flops_ratio,params_compression_rate,flops_reduction_rate,below_baseline_short_by,penalty,eval_time_sec,epochs,inherited
+
+
+
+================================================
+FILE: runs/final_pso_16-24-56/best.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_pso_16-24-56/last.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_pso_16-24-56/metrics.csv
+================================================
+epoch,lr,train_loss,train_acc,test_loss,test_acc,epoch_time_sec
+1,0.1,0.641315,80.6800,0.423470,85.8900,18.06
+2,0.1,0.235975,91.6740,0.367401,88.4800,2.11
+3,0.1,0.171104,93.9100,0.331119,89.3300,2.01
+4,0.1,0.136706,95.2040,0.350529,89.3600,2.10
+5,0.1,0.119803,95.7860,0.357035,88.9900,2.14
+6,0.1,0.103230,96.3200,0.348317,89.5700,1.99
+7,0.1,0.098838,96.6440,0.327218,90.3400,1.88
+8,0.1,0.088890,96.9540,0.382299,89.3900,1.90
+9,0.1,0.080745,97.1740,0.356669,90.4000,1.95
+10,0.1,0.076343,97.3840,0.375880,89.7300,1.89
+11,0.1,0.073272,97.4440,0.356580,90.0200,1.97
+12,0.1,0.068680,97.5860,0.346765,90.5200,1.99
+13,0.1,0.064167,97.8240,0.403423,89.8100,1.88
+14,0.1,0.064919,97.7460,0.371591,90.3500,2.00
+15,0.1,0.062247,97.8600,0.361633,90.7500,1.98
+16,0.1,0.057736,97.9560,0.343084,90.7300,1.96
+17,0.1,0.057710,98.0620,0.362761,90.3300,1.86
+18,0.1,0.052966,98.1960,0.451499,89.5500,1.90
+19,0.1,0.052927,98.1980,0.388496,89.9600,1.89
+20,0.1,0.051875,98.2060,0.378822,89.8500,1.88
+21,0.1,0.052363,98.2080,0.415511,90.4100,1.92
+22,0.1,0.050638,98.2620,0.414755,90.0400,1.97
+23,0.1,0.049237,98.3260,0.397276,90.2600,1.91
+24,0.1,0.049148,98.3440,0.450473,89.6900,1.98
+25,0.1,0.046549,98.4040,0.392460,90.2600,2.04
+26,0.1,0.049414,98.3060,0.452277,89.4500,1.92
+27,0.1,0.044973,98.4860,0.453528,89.0400,1.93
+28,0.1,0.044736,98.4420,0.421071,90.1400,1.87
+29,0.1,0.042913,98.4980,0.430742,89.9600,1.89
+30,0.1,0.043378,98.4700,0.407236,90.0900,1.99
+31,0.1,0.039801,98.6720,0.439565,89.7300,1.95
+32,0.1,0.044266,98.4840,0.406291,90.4500,1.98
+33,0.1,0.044306,98.4840,0.442155,89.6700,1.92
+34,0.1,0.044095,98.5020,0.439741,89.3200,1.93
+35,0.1,0.040308,98.6000,0.427788,90.2600,1.88
+36,0.1,0.038991,98.6560,0.456391,89.4500,1.91
+37,0.1,0.038755,98.6340,0.437608,89.8100,1.91
+38,0.1,0.037546,98.7020,0.399436,90.7800,1.83
+39,0.1,0.040009,98.6340,0.410705,90.5500,1.90
+40,0.1,0.040383,98.6340,0.462666,89.3700,1.92
+41,0.010000000000000002,0.025267,99.2060,0.346202,91.9300,1.87
+42,0.010000000000000002,0.019391,99.4280,0.346515,91.9400,1.95
+43,0.010000000000000002,0.017975,99.4700,0.342683,92.0800,1.88
+44,0.010000000000000002,0.016133,99.5960,0.341933,92.0300,1.82
+45,0.010000000000000002,0.015191,99.6440,0.345130,92.0300,1.99
+46,0.010000000000000002,0.014060,99.6580,0.344899,91.9400,1.90
+47,0.010000000000000002,0.013074,99.6800,0.343531,92.0700,1.90
+48,0.010000000000000002,0.012449,99.7140,0.343277,91.9600,1.82
+49,0.010000000000000002,0.012900,99.6740,0.345625,91.8400,2.02
+50,0.010000000000000002,0.012977,99.6880,0.346453,91.9800,1.96
+51,0.010000000000000002,0.011766,99.7420,0.343260,91.9000,1.85
+52,0.010000000000000002,0.011061,99.7660,0.346848,91.9600,1.91
+53,0.010000000000000002,0.010922,99.7740,0.349488,92.0100,1.85
+54,0.010000000000000002,0.011374,99.7440,0.347760,91.9100,1.93
+55,0.010000000000000002,0.011062,99.7620,0.349628,92.0400,1.85
+56,0.010000000000000002,0.010569,99.7800,0.349388,92.0000,2.10
+57,0.010000000000000002,0.010193,99.7700,0.346161,91.9600,1.99
+58,0.010000000000000002,0.009369,99.8360,0.347529,92.1400,1.89
+59,0.010000000000000002,0.009910,99.8060,0.346804,92.1800,1.96
+60,0.010000000000000002,0.009855,99.8040,0.351544,92.0000,1.89
+61,0.0010000000000000002,0.009887,99.7860,0.349869,92.0200,1.88
+62,0.0010000000000000002,0.009310,99.8220,0.349676,92.0600,2.00
+63,0.0010000000000000002,0.009053,99.8340,0.350898,92.0100,1.96
+64,0.0010000000000000002,0.009158,99.8240,0.349437,92.0400,1.98
+65,0.0010000000000000002,0.008432,99.8540,0.349503,92.0400,1.84
+66,0.0010000000000000002,0.009417,99.8100,0.349165,92.0800,1.96
+67,0.0010000000000000002,0.009144,99.8040,0.348735,92.1200,1.99
+68,0.0010000000000000002,0.008484,99.8400,0.348156,92.1200,1.97
+69,0.0010000000000000002,0.009281,99.8120,0.348608,92.0800,1.99
+70,0.0010000000000000002,0.009263,99.7900,0.349553,92.0500,1.89
+71,0.0010000000000000002,0.009506,99.7940,0.348437,92.1000,1.84
+72,0.0010000000000000002,0.009098,99.8200,0.348152,92.0900,2.02
+73,0.0010000000000000002,0.009108,99.8000,0.348510,92.1000,1.90
+74,0.0010000000000000002,0.008501,99.8480,0.348204,92.1300,1.85
+75,0.0010000000000000002,0.008250,99.8680,0.349339,92.0900,1.86
+76,0.0010000000000000002,0.008575,99.8600,0.348719,92.0500,1.98
+77,0.0010000000000000002,0.008584,99.8340,0.348114,92.0400,1.93
+78,0.0010000000000000002,0.008720,99.8700,0.348510,92.0500,2.03
+79,0.0010000000000000002,0.009065,99.8240,0.348859,92.0500,1.98
+80,0.0010000000000000002,0.009107,99.8260,0.347922,92.0800,1.88
+
+
+
+================================================
+FILE: runs/final_pso_16-24-56/summary.json
+================================================
+{
+  "run_name": "final_pso_16-24-56",
+  "model": "WidthResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    16,
+    24,
+    56
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 80,
+  "best_acc": 92.17999990234375,
+  "best_epoch": 59,
+  "params": 342218,
+  "flops": 53895728,
+  "total_train_time_sec": 172.47587203979492,
+  "checkpoint_best": "runs/final_pso_16-24-56/best.pt",
+  "checkpoint_last": "runs/final_pso_16-24-56/last.pt"
+}
+
+
+================================================
+FILE: runs/final_width_16-24-48/best.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_width_16-24-48/last.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_width_16-24-48/metrics.csv
+================================================
+epoch,lr,train_loss,train_acc,test_loss,test_acc,epoch_time_sec
+1,0.1,1.961927,25.4540,1.872155,30.9000,7.27
+2,0.1,1.541003,42.0680,1.534074,44.2600,3.35
+3,0.1,1.314712,51.1440,1.780245,42.0400,3.38
+4,0.1,1.141374,58.3200,1.150150,59.6400,3.33
+5,0.1,1.001832,63.8760,1.158312,62.0300,3.43
+6,0.1,0.905566,67.4960,1.231917,58.9600,3.38
+7,0.1,0.849075,69.8600,1.092794,64.3700,3.39
+8,0.1,0.771559,72.6420,1.381960,57.3000,3.42
+9,0.1,0.720262,74.8400,0.941749,68.8200,3.51
+10,0.1,0.673050,76.2740,0.776213,74.3100,3.38
+11,0.1,0.628348,77.9660,0.734929,75.9900,3.36
+12,0.1,0.596140,79.1860,0.899283,71.2900,3.36
+13,0.1,0.565291,80.1800,0.854287,72.0600,3.38
+14,0.1,0.545127,81.0500,1.433754,62.2000,3.35
+15,0.1,0.520551,81.6660,0.726334,77.0800,3.36
+16,0.1,0.498161,82.5820,0.838201,73.3300,3.40
+17,0.1,0.485427,82.8820,0.674556,78.2000,3.34
+18,0.1,0.460753,83.9680,0.743702,77.0100,3.38
+19,0.1,0.446128,84.3940,0.939089,73.8000,3.33
+20,0.1,0.434885,84.7140,0.740041,77.2600,3.39
+21,0.1,0.423713,85.1460,0.820661,75.3800,3.29
+22,0.1,0.411035,85.5380,0.621661,80.4900,3.32
+23,0.1,0.403125,85.9400,0.675729,79.3000,3.35
+24,0.1,0.382872,86.6460,0.686983,77.4800,3.34
+25,0.1,0.382090,86.5440,0.673200,78.2600,3.41
+26,0.1,0.376196,86.6620,0.592273,80.8300,3.33
+27,0.1,0.368883,87.0640,1.027575,72.2900,3.40
+28,0.1,0.360350,87.4380,0.559129,81.8900,3.35
+29,0.1,0.347805,87.7980,0.757000,77.3000,3.36
+30,0.1,0.345915,87.8860,0.561557,82.4000,3.37
+31,0.1,0.326215,88.5600,0.794529,77.4500,3.42
+32,0.1,0.325104,88.8020,0.494136,83.4600,3.37
+33,0.1,0.314288,89.1080,0.565365,82.5400,3.41
+34,0.1,0.311482,89.1820,0.575187,81.9300,3.44
+35,0.1,0.306294,89.2140,0.830656,75.4200,3.44
+36,0.1,0.307649,89.2460,0.645385,80.1200,3.42
+37,0.1,0.293238,89.6360,0.635987,81.3500,3.42
+38,0.1,0.285675,89.9260,0.504809,83.8700,3.37
+39,0.1,0.279178,90.2700,0.785887,77.2200,3.31
+40,0.1,0.279947,90.2860,0.565111,82.6200,3.38
+41,0.010000000000000002,0.228334,92.0820,0.380903,87.3000,3.42
+42,0.010000000000000002,0.204169,92.8820,0.377349,87.4100,3.70
+43,0.010000000000000002,0.197126,93.2260,0.381393,87.4900,5.16
+44,0.010000000000000002,0.195455,93.2280,0.380497,87.6100,3.93
+45,0.010000000000000002,0.185981,93.6360,0.384205,87.7100,6.39
+46,0.010000000000000002,0.186599,93.5880,0.375827,87.7500,6.26
+47,0.010000000000000002,0.181681,93.7480,0.384948,87.6600,6.21
+48,0.010000000000000002,0.182709,93.6760,0.389823,87.5700,6.12
+49,0.010000000000000002,0.181834,93.7400,0.398034,87.4900,6.01
+50,0.010000000000000002,0.178513,93.7780,0.384571,87.7700,5.90
+51,0.010000000000000002,0.177334,93.8960,0.388028,87.7900,5.59
+52,0.010000000000000002,0.175537,93.8400,0.392070,87.7900,5.41
+53,0.010000000000000002,0.172534,94.0040,0.391363,87.8300,5.51
+54,0.010000000000000002,0.169360,94.1500,0.398197,87.4900,5.44
+55,0.010000000000000002,0.169640,94.1440,0.395326,87.8100,5.52
+56,0.010000000000000002,0.167533,94.2060,0.400721,87.7300,5.44
+57,0.010000000000000002,0.164873,94.3220,0.404544,87.7900,5.53
+58,0.010000000000000002,0.164032,94.2820,0.405072,87.6900,5.47
+59,0.010000000000000002,0.161763,94.4320,0.399951,87.8500,5.39
+60,0.010000000000000002,0.160464,94.4040,0.412955,87.5200,5.59
+61,0.0010000000000000002,0.159158,94.5200,0.392698,87.9600,5.51
+62,0.0010000000000000002,0.155250,94.6720,0.392562,87.9900,5.48
+63,0.0010000000000000002,0.155146,94.7080,0.392894,88.0600,5.54
+64,0.0010000000000000002,0.151745,94.7480,0.392652,87.9100,5.56
+65,0.0010000000000000002,0.153630,94.7920,0.392870,87.8800,5.57
+66,0.0010000000000000002,0.152458,94.7280,0.393253,88.0200,5.52
+67,0.0010000000000000002,0.152645,94.7240,0.392379,87.9900,5.59
+68,0.0010000000000000002,0.152823,94.7260,0.393143,87.9200,5.48
+69,0.0010000000000000002,0.151470,94.7080,0.392913,87.9400,5.68
+70,0.0010000000000000002,0.151945,94.7300,0.392805,88.1400,5.54
+71,0.0010000000000000002,0.149534,94.8820,0.393516,88.0200,5.52
+72,0.0010000000000000002,0.149450,94.8760,0.394258,87.9600,5.54
+73,0.0010000000000000002,0.152568,94.5740,0.393160,88.0500,5.49
+74,0.0010000000000000002,0.149739,94.8760,0.392541,88.0500,5.66
+75,0.0010000000000000002,0.151447,94.8120,0.392640,88.0900,5.59
+76,0.0010000000000000002,0.151511,94.7840,0.393181,88.0100,5.58
+77,0.0010000000000000002,0.149783,94.7700,0.392947,88.0300,5.51
+78,0.0010000000000000002,0.151986,94.7420,0.393019,87.9800,5.62
+79,0.0010000000000000002,0.149773,94.7580,0.392558,88.0600,5.62
+80,0.0010000000000000002,0.148777,94.8880,0.393721,88.0100,5.61
+
+
+
+================================================
+FILE: runs/final_width_16-24-48/summary.json
+================================================
+{
+  "run_name": "final_width_16-24-48",
+  "model": "WidthResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    16,
+    24,
+    48
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 80,
+  "best_acc": 88.14000009765626,
+  "best_epoch": 70,
+  "params": 272858,
+  "flops": 49471968,
+  "total_train_time_sec": 359.87097120285034,
+  "checkpoint_best": "runs/final_width_16-24-48/best.pt",
+  "checkpoint_last": "runs/final_width_16-24-48/last.pt"
+}
+
+
+================================================
+FILE: runs/final_width_16-24-56/best.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_width_16-24-56/last.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/final_width_16-24-56/metrics.csv
+================================================
+epoch,lr,train_loss,train_acc,test_loss,test_acc,epoch_time_sec
+1,0.1,1.927952,25.8300,1.680115,35.4800,11.11
+2,0.1,1.539240,41.7460,1.487384,45.2700,6.42
+3,0.1,1.342855,50.4740,1.761779,45.3700,6.35
+4,0.1,1.150515,58.5480,1.380060,52.4700,6.35
+5,0.1,1.007780,63.6300,1.070359,62.4700,6.33
+6,0.1,0.898221,67.8580,1.341264,57.0700,6.07
+7,0.1,0.812913,71.0160,0.922714,69.0400,6.09
+8,0.1,0.738458,73.9640,1.400729,59.9200,5.76
+9,0.1,0.683476,75.8960,0.834238,71.6800,5.62
+10,0.1,0.644309,77.3840,1.517362,60.5300,5.64
+11,0.1,0.600484,78.9520,0.818305,74.2900,5.63
+12,0.1,0.570060,80.1340,0.875571,71.6200,5.68
+13,0.1,0.546008,80.9500,0.842651,73.0500,5.66
+14,0.1,0.520736,81.9220,0.772520,75.3200,5.53
+15,0.1,0.505659,82.4180,0.784038,75.0700,5.75
+16,0.1,0.473465,83.4600,0.867297,73.7900,5.57
+17,0.1,0.456502,84.1720,0.900654,73.4800,5.57
+18,0.1,0.442274,84.5460,0.754345,77.1300,5.67
+19,0.1,0.428319,85.0420,0.780355,75.2900,5.52
+20,0.1,0.418192,85.2780,0.942919,72.2900,5.64
+21,0.1,0.409307,85.7740,0.917576,73.3000,5.58
+22,0.1,0.388482,86.5640,0.711669,78.4000,5.58
+23,0.1,0.377669,86.7080,0.662863,80.1900,5.70
+24,0.1,0.362502,87.4920,0.632879,80.2200,5.47
+25,0.1,0.356262,87.3960,0.570232,80.7100,5.58
+26,0.1,0.343850,88.0320,0.661245,79.1100,5.48
+27,0.1,0.331699,88.2880,0.653859,80.7100,5.66
+28,0.1,0.333274,88.2420,0.722439,78.8500,5.53
+29,0.1,0.318447,88.9400,0.639772,80.3800,5.68
+30,0.1,0.308513,89.2660,0.521237,82.9600,5.49
+31,0.1,0.299127,89.4520,0.664028,80.1600,5.59
+32,0.1,0.295392,89.5820,0.563297,82.1800,5.44
+33,0.1,0.290284,89.7720,0.657505,79.4900,5.66
+34,0.1,0.280539,90.1780,0.690927,80.0000,5.63
+35,0.1,0.278933,90.2200,0.622945,81.2700,5.45
+36,0.1,0.270659,90.4780,0.549501,82.8800,5.58
+37,0.1,0.263640,90.7500,0.584709,81.7700,4.51
+38,0.1,0.256110,90.9440,0.567204,82.9600,3.41
+39,0.1,0.260199,90.8800,0.593072,83.2000,3.43
+40,0.1,0.249758,91.2040,0.583093,82.5300,3.37
+41,0.010000000000000002,0.198132,93.1440,0.374541,88.2600,3.35
+42,0.010000000000000002,0.174243,94.0440,0.363578,88.5300,3.34
+43,0.010000000000000002,0.167316,94.2880,0.363524,88.6000,3.35
+44,0.010000000000000002,0.162026,94.4900,0.363307,88.7800,3.32
+45,0.010000000000000002,0.160015,94.5660,0.368014,88.7600,3.36
+46,0.010000000000000002,0.156454,94.7080,0.370277,88.6800,3.31
+47,0.010000000000000002,0.152471,94.7680,0.378165,88.1800,3.40
+48,0.010000000000000002,0.151490,94.8180,0.377313,88.5200,3.46
+49,0.010000000000000002,0.149837,94.8540,0.371048,88.6600,3.39
+50,0.010000000000000002,0.150156,94.8780,0.373699,88.5700,3.46
+51,0.010000000000000002,0.144080,95.0540,0.374081,88.7300,3.38
+52,0.010000000000000002,0.142564,95.1040,0.377529,88.6400,3.41
+53,0.010000000000000002,0.140630,95.2000,0.375621,88.6300,3.40
+54,0.010000000000000002,0.140042,95.2220,0.378457,88.6400,3.36
+55,0.010000000000000002,0.138655,95.2780,0.386458,88.3400,3.36
+56,0.010000000000000002,0.135631,95.3880,0.383069,88.4900,3.34
+57,0.010000000000000002,0.135312,95.3660,0.385350,88.5100,3.35
+58,0.010000000000000002,0.132813,95.4700,0.391276,88.6300,3.34
+59,0.010000000000000002,0.131674,95.4780,0.392315,88.6800,3.37
+60,0.010000000000000002,0.131593,95.4400,0.401947,88.1900,3.37
+61,0.0010000000000000002,0.126574,95.6420,0.384364,88.9000,3.38
+62,0.0010000000000000002,0.123699,95.8280,0.383598,88.9100,3.48
+63,0.0010000000000000002,0.121935,95.8140,0.384660,88.8200,3.36
+64,0.0010000000000000002,0.123136,95.8240,0.383740,88.8300,3.37
+65,0.0010000000000000002,0.119448,95.9260,0.384691,88.9600,3.38
+66,0.0010000000000000002,0.122721,95.8060,0.383668,88.8900,3.47
+67,0.0010000000000000002,0.122618,95.7620,0.384349,88.8600,3.42
+68,0.0010000000000000002,0.121135,95.8760,0.382037,88.9300,3.47
+69,0.0010000000000000002,0.118718,95.8380,0.384040,88.9700,3.46
+70,0.0010000000000000002,0.117648,96.0640,0.383738,88.8400,3.31
+71,0.0010000000000000002,0.119746,95.9500,0.383285,88.8700,3.36
+72,0.0010000000000000002,0.119472,95.8520,0.383451,88.9700,3.32
+73,0.0010000000000000002,0.120003,95.9200,0.384111,88.9400,3.41
+74,0.0010000000000000002,0.120049,95.9260,0.383141,88.8500,3.31
+75,0.0010000000000000002,0.120102,95.9680,0.383954,88.9500,3.41
+76,0.0010000000000000002,0.120514,95.9000,0.383938,88.9300,3.34
+77,0.0010000000000000002,0.117549,95.9960,0.383718,88.8600,3.34
+78,0.0010000000000000002,0.118500,95.9320,0.385651,88.8900,3.36
+79,0.0010000000000000002,0.118114,95.9100,0.385855,88.7900,3.32
+80,0.0010000000000000002,0.117925,96.0400,0.385526,88.8800,3.31
+
+
+
+================================================
+FILE: runs/final_width_16-24-56/summary.json
+================================================
+{
+  "run_name": "final_width_16-24-56",
+  "model": "WidthResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    16,
+    24,
+    56
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 80,
+  "best_acc": 88.97000013427734,
+  "best_epoch": 69,
+  "params": 342218,
+  "flops": 53895728,
+  "total_train_time_sec": 362.56282925605774,
+  "checkpoint_best": "runs/final_width_16-24-56/best.pt",
+  "checkpoint_last": "runs/final_width_16-24-56/last.pt"
+}
+
+
+================================================
+FILE: runs/resnet32_baseline/best.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/resnet32_baseline/last.pt
+================================================
+[Binary file]
+
+
+================================================
+FILE: runs/resnet32_baseline/metrics.csv
+================================================
+epoch,lr,train_loss,train_acc,test_loss,test_acc,epoch_time_sec
+1,0.1,1.719435,35.8300,1.557563,43.8600,7.00
+2,0.1,1.205478,56.0080,1.055232,61.8500,4.78
+3,0.1,0.971190,65.3620,1.092702,64.0800,4.75
+4,0.1,0.805020,71.6300,0.908110,69.6600,4.75
+5,0.1,0.691493,75.8580,0.839073,73.4500,4.79
+6,0.1,0.621276,78.3240,0.675066,77.5400,4.98
+7,0.1,0.563043,80.6180,0.707440,77.5900,4.75
+8,0.1,0.526887,81.8300,0.710358,77.3000,4.85
+9,0.1,0.494264,83.0800,0.692164,77.6100,5.04
+10,0.1,0.467939,83.8740,0.661445,79.0300,4.73
+11,0.1,0.442586,84.6540,0.582505,81.4200,4.73
+12,0.1,0.424790,85.5340,0.544430,82.4700,4.93
+13,0.1,0.409448,85.8240,0.509774,83.2200,4.89
+14,0.1,0.393867,86.4180,0.585683,81.7800,4.82
+15,0.1,0.377804,86.7500,0.506898,83.8200,4.78
+16,0.1,0.370144,87.2300,0.510261,83.1200,4.87
+17,0.1,0.355733,87.6780,0.536943,82.1300,4.85
+18,0.1,0.350674,87.8320,0.487926,83.6000,4.82
+19,0.1,0.338620,88.1940,0.588914,81.1500,4.80
+20,0.1,0.329909,88.5480,0.483729,83.7700,4.77
+21,0.1,0.321486,88.8080,0.568804,82.1400,4.75
+22,0.1,0.318023,88.9480,0.471855,85.0100,4.79
+23,0.1,0.306056,89.3740,0.426865,85.5300,4.83
+24,0.1,0.309497,89.2540,0.458083,85.2200,4.89
+25,0.1,0.295942,89.6820,0.578295,82.3400,4.79
+26,0.1,0.290721,90.0340,0.504572,84.0900,4.79
+27,0.1,0.284719,90.0500,0.500300,84.1500,4.74
+28,0.1,0.279066,90.2980,0.394819,87.2000,4.77
+29,0.1,0.277252,90.3540,0.546645,83.2500,4.84
+30,0.1,0.272590,90.5040,0.597346,81.6400,4.80
+31,0.1,0.263977,90.8400,0.458053,85.9200,4.75
+32,0.1,0.267955,90.6960,0.537936,83.3800,4.78
+33,0.1,0.262579,90.8580,0.418006,86.2400,4.71
+34,0.1,0.257232,91.0360,0.404190,86.8700,4.80
+35,0.1,0.256723,90.8680,0.474870,85.3300,4.96
+36,0.1,0.253352,91.2220,0.468003,85.0000,4.82
+37,0.1,0.250375,91.1400,0.454693,85.7200,4.80
+38,0.1,0.243955,91.4980,0.444735,86.2200,4.76
+39,0.1,0.241866,91.5400,0.497123,84.6300,4.69
+40,0.1,0.241414,91.5300,0.560041,83.4600,4.72
+41,0.1,0.242251,91.4300,0.465562,85.4400,4.73
+42,0.1,0.239082,91.6660,0.452390,85.8200,4.79
+43,0.1,0.235573,91.7160,0.386487,87.4900,4.76
+44,0.1,0.237355,91.7900,0.608012,83.0200,4.84
+45,0.1,0.231533,91.9300,0.432185,86.6300,4.75
+46,0.1,0.228755,92.1380,0.417167,86.6500,4.83
+47,0.1,0.233652,91.9060,0.532461,84.6600,4.81
+48,0.1,0.228382,91.9180,0.402452,87.2900,4.77
+49,0.1,0.222287,92.3280,0.449379,85.8100,4.71
+50,0.1,0.223913,92.0860,0.422455,86.7300,4.77
+51,0.1,0.224234,92.1760,0.443036,86.1600,6.88
+52,0.1,0.221025,92.2940,0.399994,88.0900,4.75
+53,0.1,0.216145,92.5160,0.444357,86.2000,179.32
+54,0.1,0.216582,92.3600,0.441592,86.4700,4.83
+55,0.1,0.216639,92.4040,0.504942,84.5500,4.82
+56,0.1,0.214815,92.4500,0.506020,84.8000,4.87
+57,0.1,0.209825,92.6260,0.473616,86.4500,4.92
+58,0.1,0.213167,92.5480,0.474191,85.6300,4.72
+59,0.1,0.212893,92.5360,0.428333,85.7700,4.95
+60,0.1,0.209769,92.5840,0.434891,86.8900,4.85
+61,0.1,0.207276,92.7340,0.508883,85.3600,4.85
+62,0.1,0.211084,92.5480,0.442082,86.7600,4.75
+63,0.1,0.205151,92.9260,0.445629,86.3200,4.79
+64,0.1,0.199745,93.1440,0.417740,87.0300,4.81
+65,0.1,0.205885,92.7300,0.445898,86.4700,4.80
+66,0.1,0.199967,93.0180,0.426734,87.0900,4.76
+67,0.1,0.197807,93.0560,0.510722,85.8500,4.88
+68,0.1,0.206756,92.7120,0.545181,84.4000,4.75
+69,0.1,0.198095,93.0500,0.444169,86.6900,4.74
+70,0.1,0.204902,92.8760,0.438248,86.5700,4.79
+71,0.1,0.199517,93.0720,0.436245,86.9300,4.81
+72,0.1,0.200779,93.0400,0.378121,88.6800,4.84
+73,0.1,0.193481,93.2920,0.461196,86.1600,4.77
+74,0.1,0.200072,92.9320,0.487301,85.2400,4.74
+75,0.1,0.200875,92.9240,0.463676,86.6100,4.79
+76,0.1,0.193693,93.2660,0.424917,86.6100,4.84
+77,0.1,0.195983,93.1340,0.417139,87.0000,4.83
+78,0.1,0.194023,93.2180,0.426227,86.8800,4.79
+79,0.1,0.199408,92.8980,0.449018,87.1900,4.73
+80,0.1,0.193713,93.2300,0.403167,87.9600,4.75
+81,0.1,0.197848,93.1280,0.465952,85.8100,4.85
+82,0.1,0.188293,93.3440,0.409810,87.3200,4.97
+83,0.1,0.192665,93.1700,0.597398,83.4300,4.87
+84,0.1,0.194756,93.0640,0.464335,86.6100,4.77
+85,0.1,0.192844,93.2540,0.430356,87.4900,4.76
+86,0.1,0.189919,93.2900,0.444131,86.8600,4.78
+87,0.1,0.191928,93.3100,0.500015,85.5500,4.75
+88,0.1,0.196111,93.0640,0.445969,86.4500,4.76
+89,0.1,0.191820,93.1920,0.451968,86.9400,4.77
+90,0.1,0.186586,93.4320,0.434926,86.5500,4.76
+91,0.1,0.188894,93.3620,0.378389,88.6300,4.85
+92,0.1,0.182315,93.5140,0.436584,87.0000,4.76
+93,0.1,0.184755,93.5200,0.512654,85.4500,4.73
+94,0.1,0.190526,93.1680,0.456501,86.7200,4.78
+95,0.1,0.183881,93.5720,0.505891,85.4800,4.80
+96,0.1,0.181916,93.6060,0.379497,88.2900,4.82
+97,0.1,0.185624,93.4180,0.460493,86.9300,4.88
+98,0.1,0.187571,93.4440,0.496779,85.8800,4.85
+99,0.1,0.186503,93.4200,0.414955,87.4900,4.95
+100,0.1,0.183565,93.6400,0.408859,87.0900,4.97
+101,0.010000000000000002,0.107143,96.4220,0.255042,91.7800,5.00
+102,0.010000000000000002,0.075628,97.5760,0.250660,92.0200,4.88
+103,0.010000000000000002,0.064417,97.8800,0.255587,92.2600,4.84
+104,0.010000000000000002,0.060509,97.9460,0.257907,92.2200,4.85
+105,0.010000000000000002,0.053819,98.2260,0.258285,92.2800,4.78
+106,0.010000000000000002,0.051499,98.3620,0.259616,92.3600,4.81
+107,0.010000000000000002,0.045903,98.5460,0.259198,92.5400,4.77
+108,0.010000000000000002,0.043642,98.6480,0.263465,92.5900,4.73
+109,0.010000000000000002,0.042159,98.6400,0.264176,92.6400,4.78
+110,0.010000000000000002,0.039330,98.7200,0.272667,92.5000,4.82
+111,0.010000000000000002,0.036703,98.8680,0.269480,92.4000,4.79
+112,0.010000000000000002,0.035535,98.8780,0.268636,92.5500,4.95
+113,0.010000000000000002,0.033555,98.9300,0.281372,92.2600,4.80
+114,0.010000000000000002,0.031689,99.0180,0.271818,92.6000,4.72
+115,0.010000000000000002,0.031516,99.0180,0.277464,92.7000,4.80
+116,0.010000000000000002,0.028250,99.1460,0.277306,92.7500,4.82
+117,0.010000000000000002,0.027180,99.1640,0.283588,92.4300,4.86
+118,0.010000000000000002,0.025775,99.2460,0.285303,92.6100,4.81
+119,0.010000000000000002,0.024867,99.2540,0.280821,92.7000,4.78
+120,0.010000000000000002,0.024534,99.2920,0.281601,92.4900,4.72
+121,0.010000000000000002,0.023467,99.3140,0.288398,92.5800,4.81
+122,0.010000000000000002,0.023738,99.2880,0.288061,92.6900,4.99
+123,0.010000000000000002,0.021581,99.4020,0.290380,92.8600,4.78
+124,0.010000000000000002,0.021538,99.3680,0.285277,92.7700,4.76
+125,0.010000000000000002,0.021714,99.3500,0.294841,92.5800,4.79
+126,0.010000000000000002,0.021370,99.3480,0.297623,92.4700,4.89
+127,0.010000000000000002,0.020078,99.3920,0.302018,92.5900,4.69
+128,0.010000000000000002,0.019537,99.3820,0.303240,92.7500,4.73
+129,0.010000000000000002,0.018058,99.4820,0.303451,92.6900,41.19
+130,0.010000000000000002,0.017528,99.4980,0.309060,92.7700,4.89
+131,0.010000000000000002,0.017259,99.5020,0.302118,92.8100,4.87
+132,0.010000000000000002,0.018036,99.4800,0.313367,92.5700,4.79
+133,0.010000000000000002,0.016891,99.5040,0.310563,92.6700,4.86
+134,0.010000000000000002,0.016223,99.5460,0.306073,92.6400,4.86
+135,0.010000000000000002,0.016416,99.5040,0.312438,92.6200,4.87
+136,0.010000000000000002,0.016340,99.5480,0.305120,92.6800,4.81
+137,0.010000000000000002,0.015670,99.5480,0.308347,92.7600,4.79
+138,0.010000000000000002,0.015150,99.5960,0.311262,92.9100,4.87
+139,0.010000000000000002,0.014715,99.5720,0.310835,92.6200,4.82
+140,0.010000000000000002,0.014318,99.5860,0.319252,92.6900,4.86
+141,0.010000000000000002,0.014462,99.5860,0.320783,92.6800,4.79
+142,0.010000000000000002,0.013826,99.5900,0.323955,92.7300,4.86
+143,0.010000000000000002,0.013522,99.6180,0.313834,92.7700,4.87
+144,0.010000000000000002,0.013102,99.6480,0.315786,92.7200,4.77
+145,0.010000000000000002,0.013336,99.6580,0.319489,92.8000,4.81
+146,0.010000000000000002,0.012958,99.6460,0.320010,92.8600,4.85
+147,0.010000000000000002,0.012409,99.6660,0.322148,92.7700,5.52
+148,0.010000000000000002,0.012929,99.6400,0.320209,92.7400,6.32
+149,0.010000000000000002,0.012698,99.6120,0.323250,92.7400,6.65
+150,0.010000000000000002,0.011742,99.7060,0.326505,92.9700,6.56
+151,0.0010000000000000002,0.010217,99.7500,0.319967,93.1100,6.73
+152,0.0010000000000000002,0.010052,99.7400,0.317644,93.0100,6.59
+153,0.0010000000000000002,0.009082,99.7820,0.314905,93.0400,6.64
+154,0.0010000000000000002,0.009754,99.7500,0.318453,93.0500,6.65
+155,0.0010000000000000002,0.008249,99.8000,0.319189,92.9800,6.80
+156,0.0010000000000000002,0.008393,99.7900,0.318901,92.9900,6.92
+157,0.0010000000000000002,0.008538,99.8160,0.316331,92.9800,6.68
+158,0.0010000000000000002,0.008664,99.8060,0.316374,93.1100,6.76
+159,0.0010000000000000002,0.009130,99.8000,0.318928,92.9600,6.48
+160,0.0010000000000000002,0.007753,99.8240,0.317761,93.0000,6.69
+161,0.0010000000000000002,0.007854,99.8380,0.314556,92.9200,6.62
+162,0.0010000000000000002,0.008141,99.8400,0.313029,92.9700,6.86
+163,0.0010000000000000002,0.007639,99.8500,0.319583,92.8400,6.70
+164,0.0010000000000000002,0.007898,99.8320,0.313952,93.0100,6.71
+165,0.0010000000000000002,0.008720,99.7960,0.316878,92.9300,6.56
+166,0.0010000000000000002,0.007822,99.8420,0.317708,92.9600,6.60
+167,0.0010000000000000002,0.006906,99.8580,0.315913,92.9600,6.64
+168,0.0010000000000000002,0.008261,99.8180,0.318556,93.0100,6.59
+169,0.0010000000000000002,0.008298,99.7940,0.317855,92.9400,6.58
+170,0.0010000000000000002,0.007724,99.8340,0.316047,92.9200,6.77
+171,0.0010000000000000002,0.007415,99.8560,0.316531,92.8600,6.79
+172,0.0010000000000000002,0.007141,99.8640,0.316753,92.9500,6.58
+173,0.0010000000000000002,0.007180,99.8300,0.316956,92.9400,6.63
+174,0.0010000000000000002,0.007337,99.8560,0.316295,93.0900,6.63
+175,0.0010000000000000002,0.007610,99.8320,0.316242,92.9600,6.65
+176,0.0010000000000000002,0.007743,99.8200,0.318478,93.0700,6.70
+177,0.0010000000000000002,0.007009,99.8660,0.317544,92.8700,6.75
+178,0.0010000000000000002,0.007342,99.8340,0.314841,93.0700,6.68
+179,0.0010000000000000002,0.007441,99.8300,0.315760,92.9400,6.72
+180,0.0010000000000000002,0.006791,99.8840,0.317063,92.9100,6.67
+181,0.0010000000000000002,0.007386,99.8520,0.318586,92.8700,6.57
+182,0.0010000000000000002,0.007300,99.8460,0.315913,92.9500,6.65
+183,0.0010000000000000002,0.006854,99.8860,0.315436,93.1100,6.75
+184,0.0010000000000000002,0.006876,99.8760,0.317110,92.9500,6.51
+185,0.0010000000000000002,0.007300,99.8460,0.317762,92.8400,5.22
+186,0.0010000000000000002,0.007482,99.8720,0.316579,92.9400,6.17
+187,0.0010000000000000002,0.006519,99.8900,0.317272,92.9600,6.16
+188,0.0010000000000000002,0.006869,99.8600,0.321022,93.0500,6.12
+189,0.0010000000000000002,0.006398,99.9020,0.317693,93.0000,6.18
+190,0.0010000000000000002,0.006805,99.8640,0.319173,92.9600,6.93
+191,0.0010000000000000002,0.007180,99.8500,0.319744,92.9000,8.29
+192,0.0010000000000000002,0.006928,99.8640,0.316716,92.9700,8.10
+193,0.0010000000000000002,0.006566,99.8720,0.318386,92.9600,6.54
+194,0.0010000000000000002,0.006458,99.8840,0.316713,93.0300,7.85
+195,0.0010000000000000002,0.006211,99.8720,0.319590,92.9200,7.70
+196,0.0010000000000000002,0.006413,99.8720,0.318819,92.9500,8.29
+197,0.0010000000000000002,0.006507,99.8680,0.319089,93.0200,8.31
+198,0.0010000000000000002,0.006720,99.8780,0.321269,92.9200,6.79
+199,0.0010000000000000002,0.006650,99.8720,0.318092,92.8900,8.43
+200,0.0010000000000000002,0.006811,99.8700,0.320868,92.9000,8.95
+
+
+
+================================================
+FILE: runs/resnet32_baseline/summary.json
+================================================
+{
+  "run_name": "resnet32_baseline",
+  "model": "ResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    16,
+    32,
+    64
+  ],
+  "epochs": 200,
+  "best_acc": 93.11,
+  "best_epoch": 151,
+  "params": 464154,
+  "flops": 68862592,
+  "total_train_time_sec": 1289.5462594032288,
+  "checkpoint_best": "runs/resnet32_baseline/best.pt",
+  "checkpoint_last": "runs/resnet32_baseline/last.pt"
+}
+
+
+================================================
+FILE: scripts/run_full.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python train_resnet32.py \
+  --run-name resnet32_baseline \
+  --epochs 200 \
+  --batch-size 128 \
+  --lr 0.1 \
+  --milestones 100,150 \
+  --amp
+
+
+
+================================================
+FILE: scripts/run_h100_baseline_fast.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python train_resnet32.py \
+  --run-name resnet32_baseline_fast \
+  --epochs 200 \
+  --batch-size 1024 \
+  --num-workers 8 \
+  --lr 0.1 \
+  --milestones 100,150 \
+  --amp --amp-dtype bf16 --channels-last
+
+
+
+================================================
+FILE: scripts/run_h100_search_fast.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python search_channels_ga_pso.py \
+  --algorithm both \
+  --search-epochs 1 \
+  --batch-size 2048 \
+  --num-workers 8 \
+  --max-train-samples 10000 \
+  --max-val-samples 5000 \
+  --ga-population 8 \
+  --ga-generations 5 \
+  --pso-particles 8 \
+  --pso-iterations 5 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+
+
+
+================================================
+FILE: scripts/run_quick.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python model_info.py
+python train_resnet32.py --epochs 2 --batch-size 128 --lr 0.05 --milestones 1 --run-name resnet32_quick
+
+
+
+================================================
+FILE: scripts/run_search_full.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python search_channels_ga_pso.py \
+  --algorithm both \
+  --search-epochs 3 \
+  --ga-population 8 \
+  --ga-generations 5 \
+  --pso-particles 8 \
+  --pso-iterations 5 \
+  --max-train-samples 5000 \
+  --max-test-samples 2000 \
+  --amp
+
+
+
+================================================
+FILE: scripts/run_search_quick.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python search_channels_ga_pso.py \
+  --algorithm both \
+  --search-epochs 1 \
+  --ga-population 4 \
+  --ga-generations 2 \
+  --pso-particles 4 \
+  --pso-iterations 2 \
+  --max-train-samples 1000 \
+  --max-test-samples 500
+
+
+
+================================================
+FILE: scripts/run_search_quick_windows.ps1
+================================================
+python search_channels_ga_pso.py `
+  --algorithm both `
+  --search-epochs 1 `
+  --ga-population 4 `
+  --ga-generations 2 `
+  --pso-particles 4 `
+  --pso-iterations 2 `
+  --max-train-samples 1000 `
+  --max-test-samples 500
+
+
+
+================================================
+FILE: scripts/run_train_width_example.sh
+================================================
+#!/usr/bin/env bash
+set -euo pipefail
+python train_width_resnet32.py \
+  --channels 16,24,48 \
+  --run-name final_width_16-24-48 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --amp
+
+
+
+================================================
+FILE: scripts/run_windows.ps1
+================================================
+python model_info.py
+python train_resnet32.py `
+  --run-name resnet32_baseline `
+  --epochs 200 `
+  --batch-size 128 `
+  --lr 0.1 `
+  --milestones 100,150 `
+  --amp
+
+
+
+================================================
+FILE: src/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: src/data/__init__.py
+================================================
+from .cifar10 import get_cifar10_loaders, get_cifar10_test_loader, get_cifar10_train_val_loaders
+
+__all__ = ["get_cifar10_loaders", "get_cifar10_test_loader", "get_cifar10_train_val_loaders"]
+
+
+
+================================================
+FILE: src/data/cifar10.py
+================================================
+from __future__ import annotations
+
+import random
+from typing import Optional
+
+import torch
+import torchvision
+import torchvision.transforms as transforms
+
+
+def _subset(dataset, max_samples: int | None, seed: int):
+    if max_samples is None or max_samples <= 0 or max_samples >= len(dataset):
+        return dataset
+    rng = random.Random(seed)
+    indices = list(range(len(dataset)))
+    rng.shuffle(indices)
+    return torch.utils.data.Subset(dataset, indices[:max_samples])
+
+
+def get_cifar10_loaders(
+    data_dir: str = "data",
+    batch_size: int = 128,
+    num_workers: int = 2,
+    max_train_samples: Optional[int] = None,
+    max_test_samples: Optional[int] = None,
+    seed: int = 42,
+):
+    mean = (0.4914, 0.4822, 0.4465)
+    std = (0.2023, 0.1994, 0.2010)
+
+    train_transform = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
+
+    train_set = torchvision.datasets.CIFAR10(
+        root=data_dir,
+        train=True,
+        download=True,
+        transform=train_transform,
+    )
+    test_set = torchvision.datasets.CIFAR10(
+        root=data_dir,
+        train=False,
+        download=True,
+        transform=test_transform,
+    )
+
+    train_set = _subset(train_set, max_train_samples, seed)
+    test_set = _subset(test_set, max_test_samples, seed + 10000)
+
+    train_loader = torch.utils.data.DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    return train_loader, test_loader
+
+
+def get_cifar10_test_loader(
+    data_dir: str = "data",
+    batch_size: int = 256,
+    num_workers: int = 2,
+    max_test_samples: Optional[int] = None,
+    seed: int = 42,
+):
+    mean = (0.4914, 0.4822, 0.4465)
+    std = (0.2023, 0.1994, 0.2010)
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
+    test_set = torchvision.datasets.CIFAR10(
+        root=data_dir,
+        train=False,
+        download=True,
+        transform=transform,
+    )
+    test_set = _subset(test_set, max_test_samples, seed + 10000)
+    return torch.utils.data.DataLoader(
+        test_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+
+
+def get_cifar10_train_val_loaders(
+    data_dir: str = "data",
+    batch_size: int = 128,
+    num_workers: int = 2,
+    val_size: int = 5000,
+    max_train_samples: Optional[int] = None,
+    max_val_samples: Optional[int] = None,
+    seed: int = 42,
+):
+    """Create train/val split loaders from CIFAR-10 *training* set (no test leakage).
+
+    This is used by the GA/PSO search (H100 fast path) so that the fitness signal
+    during search comes from a validation split, not the official test set.
+    """
+    mean = (0.4914, 0.4822, 0.4465)
+    std = (0.2023, 0.1994, 0.2010)
+
+    train_transform = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
+    val_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
+
+    # Two separate dataset objects so that val uses *no augmentation* transform
+    full_for_train = torchvision.datasets.CIFAR10(
+        root=data_dir,
+        train=True,
+        download=True,
+        transform=train_transform,
+    )
+    full_for_val = torchvision.datasets.CIFAR10(
+        root=data_dir,
+        train=True,
+        download=True,
+        transform=val_transform,
+    )
+
+    # Seeded shuffle + split (val first, then the rest is train pool)
+    rng = random.Random(seed)
+    indices = list(range(len(full_for_train)))
+    rng.shuffle(indices)
+
+    val_indices = indices[:val_size]
+    train_indices = indices[val_size:]
+
+    train_set = torch.utils.data.Subset(full_for_train, train_indices)
+    val_set = torch.utils.data.Subset(full_for_val, val_indices)
+
+    # Further reduction for fast proxy search (applied after the val split)
+    train_set = _subset(train_set, max_train_samples, seed)
+    val_set = _subset(val_set, max_val_samples, seed + 9999)
+
+    train_loader = torch.utils.data.DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    return train_loader, val_loader
+
+
+
+================================================
+FILE: src/models/__init__.py
+================================================
+from .resnet32_cifar import ResNet32, resnet32
+from .resnet32_width import WidthResNet32, width_resnet32
+
+__all__ = ["ResNet32", "resnet32", "WidthResNet32", "width_resnet32"]
+
+
+
+================================================
+FILE: src/models/resnet32_cifar.py
+================================================
+"""Standard CIFAR-10 ResNet32.
+
+This file intentionally contains only ResNet32.
+No width scaling, no compressed variants, no ResNet20/44/56/110.
+
+CIFAR ResNet depth rule: depth = 6n + 2.
+For ResNet32, n = 5, so each of the three stages has 5 residual blocks.
+
+Architecture:
+    conv1: 3x3, 16 channels
+    stage1: 5 blocks, 16 channels
+    stage2: 5 blocks, 32 channels, first block stride=2
+    stage3: 5 blocks, 64 channels, first block stride=2
+    global average pooling
+    fc: 10 classes
+"""
+from __future__ import annotations
+
+from typing import Callable
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class LambdaLayer(nn.Module):
+    def __init__(self, lambd: Callable[[torch.Tensor], torch.Tensor]) -> None:
+        super().__init__()
+        self.lambd = lambd
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.lambd(x)
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes: int, planes: int, stride: int = 1) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            in_planes,
+            planes,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(
+            planes,
+            planes,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
+        )
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        if stride == 1 and in_planes == planes:
+            self.shortcut: nn.Module = nn.Identity()
+        else:
+            # Original CIFAR ResNet option A shortcut:
+            # downsample spatial size by strided slicing and pad channels with zeros.
+            # This adds no trainable parameters.
+            def option_a(x: torch.Tensor) -> torch.Tensor:
+                out = x[:, :, ::stride, ::stride]
+                channel_pad = planes - in_planes
+                if channel_pad > 0:
+                    left = channel_pad // 2
+                    right = channel_pad - left
+                    out = F.pad(out, (0, 0, 0, 0, left, right), "constant", 0)
+                return out
+
+            self.shortcut = LambdaLayer(option_a)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.bn2(self.conv2(out))
+        out = out + self.shortcut(x)
+        out = F.relu(out, inplace=True)
+        return out
+
+
+class ResNet32(nn.Module):
+    def __init__(self, num_classes: int = 10) -> None:
+        super().__init__()
+        self.in_planes = 16
+
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.layer1 = self._make_layer(planes=16, num_blocks=5, stride=1)
+        self.layer2 = self._make_layer(planes=32, num_blocks=5, stride=2)
+        self.layer3 = self._make_layer(planes=64, num_blocks=5, stride=2)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(64, num_classes)
+
+        self._init_weights()
+
+    def _make_layer(self, planes: int, num_blocks: int, stride: int) -> nn.Sequential:
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for current_stride in strides:
+            layers.append(BasicBlock(self.in_planes, planes, current_stride))
+            self.in_planes = planes * BasicBlock.expansion
+        return nn.Sequential(*layers)
+
+    def _init_weights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0.0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, mean=0.0, std=0.01)
+                nn.init.constant_(m.bias, 0.0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.avgpool(out)
+        out = torch.flatten(out, 1)
+        out = self.fc(out)
+        return out
+
+
+def resnet32(num_classes: int = 10) -> ResNet32:
+    return ResNet32(num_classes=num_classes)
+
+
+
+================================================
+FILE: src/models/resnet32_width.py
+================================================
+"""Variable-width CIFAR-10 ResNet32 used for channel-configuration search.
+
+Important: the topology is still ResNet32.
+- depth = 6n + 2 = 32
+- n = 5 residual blocks per stage
+- only the stage channel numbers are changed
+
+This is a stage-level structured channel compression model. It is intentionally
+simple and stable for coursework experiments before moving to true channel-index
+pruning based on BN-gamma or weight norms.
+"""
+from __future__ import annotations
+
+from typing import Callable, Sequence
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class LambdaLayer(nn.Module):
+    def __init__(self, lambd: Callable[[torch.Tensor], torch.Tensor]) -> None:
+        super().__init__()
+        self.lambd = lambd
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.lambd(x)
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes: int, planes: int, stride: int = 1) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            in_planes,
+            planes,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(
+            planes,
+            planes,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
+        )
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        if stride == 1 and in_planes == planes:
+            self.shortcut: nn.Module = nn.Identity()
+        else:
+            # CIFAR ResNet option A: downsample by slicing and pad channels.
+            # This remains parameter-free, matching the baseline implementation.
+            def option_a(x: torch.Tensor) -> torch.Tensor:
+                out = x[:, :, ::stride, ::stride]
+                channel_pad = planes - in_planes
+                if channel_pad > 0:
+                    left = channel_pad // 2
+                    right = channel_pad - left
+                    out = F.pad(out, (0, 0, 0, 0, left, right), "constant", 0)
+                elif channel_pad < 0:
+                    # This branch is not expected for the default monotonic search space,
+                    # but keeps the module robust for custom channel settings.
+                    keep = planes
+                    out = out[:, :keep, :, :]
+                return out
+
+            self.shortcut = LambdaLayer(option_a)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.bn2(self.conv2(out))
+        out = out + self.shortcut(x)
+        out = F.relu(out, inplace=True)
+        return out
+
+
+class WidthResNet32(nn.Module):
+    """CIFAR-10 ResNet32 with searchable stage channels.
+
+    Args:
+        stage_channels: three integers for stage1/stage2/stage3, e.g. [16, 24, 48].
+        num_classes: number of output classes.
+    """
+
+    def __init__(self, stage_channels: Sequence[int] = (16, 32, 64), num_classes: int = 10) -> None:
+        super().__init__()
+        if len(stage_channels) != 3:
+            raise ValueError("stage_channels must contain exactly 3 integers, e.g. [16, 32, 64].")
+        c1, c2, c3 = [int(c) for c in stage_channels]
+        if min(c1, c2, c3) <= 0:
+            raise ValueError("all stage channels must be positive.")
+
+        self.stage_channels = [c1, c2, c3]
+        self.blocks_per_stage = 5
+        self.in_planes = c1
+
+        self.conv1 = nn.Conv2d(3, c1, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(c1)
+        self.stage1 = self._make_layer(c1, num_blocks=5, stride=1)
+        self.stage2 = self._make_layer(c2, num_blocks=5, stride=2)
+        self.stage3 = self._make_layer(c3, num_blocks=5, stride=2)
+        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(c3, num_classes)
+
+        self._init_weights()
+
+    def _make_layer(self, planes: int, num_blocks: int, stride: int) -> nn.Sequential:
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(BasicBlock(self.in_planes, planes, s))
+            self.in_planes = planes * BasicBlock.expansion
+        return nn.Sequential(*layers)
+
+    def _init_weights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.stage1(out)
+        out = self.stage2(out)
+        out = self.stage3(out)
+        out = self.avg_pool(out)
+        out = torch.flatten(out, 1)
+        out = self.fc(out)
+        return out
+
+
+def width_resnet32(stage_channels: Sequence[int] = (16, 32, 64), num_classes: int = 10) -> WidthResNet32:
+    return WidthResNet32(stage_channels=stage_channels, num_classes=num_classes)
+
+
+
+================================================
+FILE: src/utils/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: src/utils/accelerate.py
+================================================
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+
+
+def setup_torch_fast(tf32: bool = True, benchmark: bool = True) -> None:
+    """Speed-oriented PyTorch settings for fixed-shape CIFAR training."""
+    torch.backends.cudnn.benchmark = benchmark
+    if torch.cuda.is_available() and tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
+
+
+def maybe_channels_last(model: nn.Module, enabled: bool) -> nn.Module:
+    if enabled and torch.cuda.is_available():
+        model = model.to(memory_format=torch.channels_last)
+    return model
+
+
+def maybe_compile(model: nn.Module, enabled: bool, mode: str = "reduce-overhead") -> nn.Module:
+    if not enabled:
+        return model
+    if not hasattr(torch, "compile"):
+        return model
+    try:
+        return torch.compile(model, mode=mode)
+    except Exception as exc:
+        print(f"[warning] torch.compile disabled because it failed: {exc}")
+        return model
+
+
+def move_images(images: torch.Tensor, device: torch.device, channels_last: bool = False) -> torch.Tensor:
+    images = images.to(device, non_blocking=True)
+    if channels_last and images.ndim == 4 and device.type == "cuda":
+        images = images.contiguous(memory_format=torch.channels_last)
+    return images
+
+
+def autocast_context(device: torch.device, enabled: bool, dtype: str = "bf16"):
+    if device.type != "cuda" or not enabled:
+        return torch.amp.autocast(device_type=device.type, enabled=False)
+    amp_dtype = torch.bfloat16 if dtype.lower() in {"bf16", "bfloat16"} else torch.float16
+    return torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=True)
+
+
+def make_grad_scaler(device: torch.device, enabled: bool, dtype: str = "bf16"):
+    # BF16 does not need GradScaler. FP16 benefits from it.
+    use_scaler = bool(enabled and device.type == "cuda" and dtype.lower() in {"fp16", "float16"})
+    return torch.amp.GradScaler(device="cuda", enabled=use_scaler)
+
+
+
+================================================
+FILE: src/utils/checkpoint.py
+================================================
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict
+
+import torch
+import torch.nn as nn
+
+
+def save_checkpoint(path: str | Path, **kwargs: Any) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    torch.save(kwargs, path)
+
+
+def load_checkpoint(path: str | Path, map_location: str | torch.device = "cpu") -> Dict[str, Any]:
+    return torch.load(path, map_location=map_location)
+
+
+def _unwrap_state_dict(obj: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+    if "model" in obj and isinstance(obj["model"], dict):
+        return obj["model"]
+    if "state_dict" in obj and isinstance(obj["state_dict"], dict):
+        return obj["state_dict"]
+    return obj  # type: ignore[return-value]
+
+
+def _baseline_key_for_width_key(key: str) -> str:
+    # WidthResNet32 uses stage1/stage2/stage3; baseline ResNet32 uses layer1/layer2/layer3.
+    return (
+        key.replace("stage1.", "layer1.")
+        .replace("stage2.", "layer2.")
+        .replace("stage3.", "layer3.")
+        .replace("avg_pool.", "avgpool.")
+    )
+
+
+def load_sliced_baseline_weights(model: nn.Module, checkpoint_path: str | Path, verbose: bool = True) -> Dict[str, int]:
+    """Initialize a width-compressed ResNet32 from a standard ResNet32 checkpoint.
+
+    Tensors are copied by common prefix slices in every dimension. This is a
+    pragmatic and fast weight inheritance strategy for stage-width search.
+    It avoids training every candidate from scratch during GA/PSO evaluation.
+    """
+    ckpt = load_checkpoint(checkpoint_path, map_location="cpu")
+    src_state = _unwrap_state_dict(ckpt)
+    dst_state = model.state_dict()
+    new_state = dict(dst_state)
+
+    copied = sliced = skipped = 0
+    for dst_key, dst_tensor in dst_state.items():
+        src_key = _baseline_key_for_width_key(dst_key)
+        if src_key not in src_state or not torch.is_tensor(src_state[src_key]):
+            skipped += 1
+            continue
+        src_tensor = src_state[src_key]
+        if src_tensor.shape == dst_tensor.shape:
+            new_state[dst_key] = src_tensor.to(dtype=dst_tensor.dtype)
+            copied += 1
+        elif src_tensor.ndim == dst_tensor.ndim:
+            patched = dst_tensor.clone()
+            if src_tensor.ndim == 0:
+                patched.copy_(src_tensor.to(dtype=dst_tensor.dtype))
+            else:
+                common_shape = tuple(min(a, b) for a, b in zip(src_tensor.shape, dst_tensor.shape))
+                slices = tuple(slice(0, d) for d in common_shape)
+                patched[slices] = src_tensor[slices].to(dtype=dst_tensor.dtype)
+            new_state[dst_key] = patched
+            sliced += 1
+        else:
+            skipped += 1
+
+    model.load_state_dict(new_state, strict=True)
+    stats = {"copied": copied, "sliced": sliced, "skipped": skipped}
+    if verbose:
+        print(f"[weight inheritance] {checkpoint_path}: {stats}")
+    return stats
+
+
+
+================================================
+FILE: src/utils/metrics.py
+================================================
+from __future__ import annotations
+
+from typing import Dict, Tuple
+
+import torch
+import torch.nn as nn
+
+
+class AverageMeter:
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.val = 0.0
+        self.avg = 0.0
+        self.sum = 0.0
+        self.count = 0
+
+    def update(self, val: float, n: int = 1) -> None:
+        self.val = float(val)
+        self.sum += float(val) * n
+        self.count += n
+        self.avg = self.sum / max(self.count, 1)
+
+
+@torch.no_grad()
+def accuracy(output: torch.Tensor, target: torch.Tensor, topk: Tuple[int, ...] = (1,)) -> list[torch.Tensor]:
+    maxk = max(topk)
+    batch_size = target.size(0)
+
+    _, pred = output.topk(maxk, dim=1, largest=True, sorted=True)
+    pred = pred.t()
+    correct = pred.eq(target.reshape(1, -1).expand_as(pred))
+
+    results = []
+    for k in topk:
+        correct_k = correct[:k].reshape(-1).float().sum(0)
+        results.append(correct_k.mul_(100.0 / batch_size))
+    return results
+
+
+def count_parameters(model: nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters())
+
+
+def human_number(n: float) -> str:
+    if abs(n) >= 1e9:
+        return f"{n / 1e9:.3f}G"
+    if abs(n) >= 1e6:
+        return f"{n / 1e6:.3f}M"
+    if abs(n) >= 1e3:
+        return f"{n / 1e3:.3f}K"
+    return f"{n:.0f}"
+
+
+@torch.no_grad()
+def measure_flops(
+    model: nn.Module,
+    input_size: Tuple[int, int, int] = (3, 32, 32),
+    device: str | torch.device = "cpu",
+) -> int:
+    """Approximate multiply-add FLOPs for one image.
+
+    Counts Conv2d and Linear layers only. BatchNorm/ReLU/residual addition are ignored,
+    which is sufficient for a clean coursework baseline comparison.
+    """
+    model = model.to(device)
+    model.eval()
+    flops: Dict[str, int] = {"total": 0}
+    hooks = []
+
+    def conv_hook(module: nn.Conv2d, inputs, output) -> None:
+        out = output[0] if isinstance(output, (tuple, list)) else output
+        batch_size = out.shape[0]
+        out_h, out_w = out.shape[2], out.shape[3]
+        kernel_ops = module.kernel_size[0] * module.kernel_size[1] * (module.in_channels // module.groups)
+        total_ops = batch_size * out_h * out_w * module.out_channels * kernel_ops
+        flops["total"] += int(total_ops / batch_size)
+
+    def linear_hook(module: nn.Linear, inputs, output) -> None:
+        batch_size = inputs[0].shape[0]
+        total_ops = batch_size * module.in_features * module.out_features
+        flops["total"] += int(total_ops / batch_size)
+
+    for module in model.modules():
+        if isinstance(module, nn.Conv2d):
+            hooks.append(module.register_forward_hook(conv_hook))
+        elif isinstance(module, nn.Linear):
+            hooks.append(module.register_forward_hook(linear_hook))
+
+    dummy = torch.randn(1, *input_size, device=device)
+    model(dummy)
+
+    for hook in hooks:
+        hook.remove()
+
+    return flops["total"]
+
+
+
+================================================
+FILE: src/utils/seed.py
+================================================
+from __future__ import annotations
+
+import os
+import random
+
+import numpy as np
+import torch
+
+
+def set_seed(seed: int = 42, deterministic: bool = False) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.benchmark = True
+
+
