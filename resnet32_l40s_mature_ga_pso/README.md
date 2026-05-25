@@ -23,7 +23,59 @@ Sliced Weight Inheritance 加速候选评估
 
 ---
 
-## 1. 安装
+## 2. L40S Baseline 精度-速度消融实验结果（已完成）
+
+我们系统性地在 L40S 上完成了 **8 组 200-epoch baseline 训练**（Batch Size × {FP16, BF16} 混合精度），目标是找到适合本项目作为 Teacher / Importance 来源的最佳基座模型。
+
+### 2.1 最终训练结果
+
+| 配置                  | 测试 Acc | 最佳 Epoch | 训练时长    | 相对 b128_fp16 加速 | 备注 |
+|-----------------------|----------|------------|-------------|---------------------|------|
+| **b128 + BF16**       | **93.45%** | 193        | 1811s      | **1.14×**           | **最高精度，强烈推荐作为主 Teacher** |
+| b128 + FP16           | 93.10%   | 120        | 2070s      | 1.00× (基准)        | 非常稳定，精度优秀 |
+| b256 + BF16           | 92.57%   | 186        | 1678s      | 1.23×               | 精度掉点 0.88% |
+| b256 + FP16           | 92.38%   | 139        | 1862s      | 1.11×               | - |
+| b512 + BF16           | 91.80%   | 137        | 1281s      | 1.62×               | 精度掉点 1.65% |
+| b512 + FP16           | 91.71%   | 158        | 1405s      | 1.47×               | - |
+| b1024 + BF16          | 90.95%   | 122        | 1177s      | 1.76×               | 精度掉点 2.5% |
+| b1024 + FP16          | 91.01%   | 146        | 1081s      | **1.91×**           | 最快，但精度损失最大 |
+
+**数据来源**：各 `runs/resnet32_l40s_b*/summary.json`
+
+### 2.2 关键发现
+
+- **意外收获**：`b128 + BF16` 达到了 **93.45%**，比之前非 L40S 版本的 93.11% 还高！说明在小 batch 下，BF16 + channels-last + TF32 组合对这个模型非常友好。
+- **Batch Size 影响显著**：随着 batch size 从 128 → 1024，精度持续下降（尤其是 >256 后掉点明显）。这验证了我们之前的判断：大 batch 在 ResNet32+CIFAR-10 上优化难度大。
+- **BF16 vs FP16**：在相同 batch size 下，BF16 通常收敛更好或持平（特别是 b128）。
+- **速度收益**：b1024 版本训练时间只有 b128 的 ~52~55%，但精度损失 2.1~2.5%，性价比不高。
+- **推荐用于后续实验**：
+  - **主 Teacher / Importance 来源**：`resnet32_l40s_b128_bf16`（93.45%）
+  - **速度-质量平衡备选**：`resnet32_l40s_b256_bf16`（如果后面搜索想更快）
+
+### 2.3 课程论文使用提示
+
+核心文件（可直接引用）：
+- 最佳 baseline：`runs/resnet32_l40s_b128_bf16/summary.json` + `best.pt`
+- 完整消融数据：上面 8 个 `resnet32_l40s_b*/summary.json`
+
+### 2.4 正式基座模型确定
+
+已将目前最好的模型（`b128 + BF16`，93.45%）复制到项目标准 baseline 目录，后续 block-level 搜索、权重继承和 KD 训练均使用统一路径：
+
+```bash
+mkdir -p runs/resnet32_baseline
+cp runs/resnet32_l40s_b128_bf16/best.pt      runs/resnet32_baseline/
+cp runs/resnet32_l40s_b128_bf16/summary.json runs/resnet32_baseline/
+cp runs/resnet32_l40s_b128_bf16/last.pt      runs/resnet32_baseline/
+```
+
+现在项目内推荐使用以下标准路径：
+- `runs/resnet32_baseline/best.pt` → 作为 Teacher 和 BN gamma 重要性先验来源
+- `runs/resnet32_baseline/summary.json` → 作为 baseline 对比依据
+
+---
+
+## 3. 安装
 
 ```bash
 pip install -r requirements.txt
@@ -31,7 +83,7 @@ pip install -r requirements.txt
 
 ---
 
-## 2. 核心优化特性（L40S 版）
+## 4. 核心优化特性（L40S 版）
 
 本版本相比基础 mature 版主要增强：
 
@@ -44,36 +96,99 @@ pip install -r requirements.txt
 
 ---
 
-## 3. 训练 Baseline / Teacher（推荐 L40S 配置）
+## 5. 本次 Baseline 消融实验的执行记录（已全部完成）
 
+**重要说明**：本节记录的是**本次实验实际执行的步骤和命令顺序**（结果已完整记录在第 2 节）。  
+当你看到这里的命令时，请注意：**这些命令已经跑完**，不要误以为还需要重新执行。
+
+本次实验严格按照以下顺序进行：
+
+1. 数据准备
+2. 按 batch size 从小到大，依次训练 FP16 和 BF16 两个精度版本（共 8 组）
+3. 对比结果后，选出最佳模型并固化到 `runs/resnet32_baseline/`
+
+### 5.1 已执行的实验步骤
+
+#### 步骤 1: 数据准备（已执行）
 ```bash
-bash scripts/run_l40s_baseline_fast.sh
+bash scripts/prepare_cifar10.sh
 ```
 
-或手动（BF16 + channels-last）：
+#### 步骤 2: Baseline 训练（已全部执行）
+
+我们按 batch size 递增顺序，分别训练 FP16 和 BF16 版本：
+
+**实际执行的 8 组命令**（命名严格遵循 `resnet32_l40s_b{batch}_{fp16,bf16}`）：
+
 ```bash
-python train_resnet32.py \
-  --run-name resnet32_baseline \
-  --epochs 200 \
-  --batch-size 1024 \
-  --lr 0.1 \
-  --milestones 100,150 \
-  --num-workers 8 \
-  --amp --amp-dtype bf16 --channels-last
+# === Batch 128 ===
+python train_resnet32.py --run-name resnet32_l40s_b128_fp16 --epochs 200 --batch-size 128 --lr 0.1 --milestones 100,150 --num-workers 8 --amp --amp-dtype fp16 --channels-last
+python train_resnet32.py --run-name resnet32_l40s_b128_bf16  --epochs 200 --batch-size 128 --lr 0.1 --milestones 100,150 --num-workers 8 --amp --amp-dtype bf16 --channels-last
+
+# === Batch 256 ===
+python train_resnet32.py --run-name resnet32_l40s_b256_fp16 --epochs 200 --batch-size 256 --lr 0.1 --milestones 100,150 --num-workers 8 --amp --amp-dtype fp16 --channels-last
+python train_resnet32.py --run-name resnet32_l40s_b256_bf16  --epochs 200 --batch-size 256 --lr 0.1 --milestones 100,150 --num-workers 8 --amp --amp-dtype bf16 --channels-last
+
+# === Batch 512 ===
+python train_resnet32.py --run-name resnet32_l40s_b512_fp16 --epochs 200 --batch-size 512 --lr 0.1 --milestones 100,150 --num-workers 8 --amp --amp-dtype fp16 --channels-last
+python train_resnet32.py --run-name resnet32_l40s_b512_bf16  --epochs 200 --batch-size 512 --lr 0.1 --milestones 100,150 --num-workers 8 --amp --amp-dtype bf16 --channels-last
+
+# === Batch 1024 ===
+python train_resnet32.py --run-name resnet32_l40s_b1024_fp16 --epochs 200 --batch-size 1024 --lr 0.1 --milestones 100,150 --num-workers 8 --amp --amp-dtype fp16 --channels-last
+python train_resnet32.py --run-name resnet32_l40s_b1024_bf16  --epochs 200 --batch-size 1024 --lr 0.1 --milestones 100,150 --num-workers 8 --amp --amp-dtype bf16 --channels-last
 ```
 
-输出 `runs/resnet32_baseline/best.pt` 将用于：
-- 搜索的重要性先验
-- 搜索阶段权重继承
-- 最终 KD 的 teacher
+**执行结果**：全部 8 组已完成，对应 `runs/resnet32_l40s_b*/` 目录，结果汇总见 **第 2 节**。
+
+#### 步骤 3: 最佳模型固化（已执行）
+```bash
+mkdir -p runs/resnet32_baseline
+cp runs/resnet32_l40s_b128_bf16/best.pt      runs/resnet32_baseline/
+cp runs/resnet32_l40s_b128_bf16/summary.json runs/resnet32_baseline/
+cp runs/resnet32_l40s_b128_bf16/last.pt      runs/resnet32_baseline/
+```
+
+### 5.2 通用建议（本次实验采用）
+
+- 所有实验均加上了 `--channels-last`
+- `num-workers` 使用 8
+- 每组训练后都保留了 `summary.json` 和 `metrics.csv`
+
+### 5.3 额外可选实验（未来可做）
+
+如果后续想进一步优化，可以考虑：
+- `resnet32_l40s_b1024_bf16_lr08`（验证 Linear Scaling Rule）
+- 加入 `--warmup-epochs 5`
+
+**注意**：以上为未来可能的工作，不是本次已完成的实验。
+  - 精度最高的 → 作为 KD Teacher + BN gamma 重要性来源
+  - 速度与精度平衡最好的 → 可作为另一个对比点
 
 ---
 
-## 4. Block-level 搜索（15 维，L40S 加速推荐）
+**当前脚本提示**（可选）：
+项目也提供了快速脚本（命名带 h100，但逻辑通用）：
+```bash
+bash scripts/run_h100_baseline_fast.sh   # 默认 1024+BF16
+```
+但**强烈建议优先手动跑上面的消融命令**，以获得完整对比数据。
+
+---
+
+### 3.3 Baseline 用途说明
+
+最终选定的最佳 checkpoint（通常命名为 `runs/resnet32_baseline/best.pt` 或你自己重命名后复制）将用于：
+- Block-level 搜索的 **BN gamma 重要性先验**
+- 搜索阶段的 **sliced weight inheritance**（`--baseline-ckpt`）
+- 最终 block-width 模型训练的 **KD Teacher**
+
+---
+
+## 6. Block-level 搜索（15 维，L40S 加速推荐）
 
 快速一键搜索：
 ```bash
-bash scripts/run_l40s_block_search_fast.sh
+bash scripts/run_h100_block_search_fast.sh
 ```
 
 等价手动命令（推荐配置）：
@@ -100,7 +215,7 @@ python search_block_channels_ga_pso.py \
 
 ---
 
-## 5. 训练最终 Block-level 模型（默认推荐 KD）
+## 7. 训练最终 Block-level 模型（默认推荐 KD）
 
 搜索完成后直接查看自动生成的命令：
 ```bash
@@ -124,26 +239,119 @@ python train_block_width_resnet32.py \
   --amp --amp-dtype bf16 --channels-last
 ```
 
----
+### 7.1 最新三次搜索得到的最佳配置（待训练）
 
-## 6. 结果对比
+以下三个配置来自最近 block-level 搜索的 PSO 最优解，用户要求全部用 KD 完整训练（80 epochs）。
+
+```bash
+# 配置1
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,16,16,16,20,16,48,40,32,32,64 \
+  --run-name final_block_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 1024 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 配置2（该次搜索中 fitness 最高）
+python train_block_width_resnet32.py \
+  --block-channels 8,8,12,8,8,20,20,16,16,16,48,32,40,40,64 \
+  --run-name final_block_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 1024 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 配置3
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,20,20,16,16,16,48,40,32,40,64 \
+  --run-name final_block_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 1024 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+
+## 8. 结果对比
+
+### 通用命令模板
 
 ```bash
 python compare_results.py \
   --baseline runs/resnet32_baseline/summary.json \
-  --compressed runs/final_block_kd/summary.json \
-  --search-result runs/block_channel_search_fast_*/best_result.json \
-  --output runs/final_comparison.json
+  --compressed runs/<你的最终训练目录>/summary.json \
+  --search-result runs/<本次搜索目录>/best_result.json \
+  --output runs/final_comparison_<配置名>.json
 ```
+
+### 8.1 本次三个新配置的推荐对比命令
+
+等你把上面 7.1 节的三个模型训练完成后，建议为每个配置单独生成对比结果（推荐做法）：
+
+**配置1 对比命令：**
+```bash
+python compare_results.py \
+  --baseline runs/resnet32_baseline/summary.json \
+  --compressed runs/final_block_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64/summary.json \
+  --search-result runs/block_channel_search_fast_*/best_result.json \
+  --output runs/final_comparison_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64.json
+```
+
+**配置2 对比命令（fitness 最高那个）：**
+```bash
+python compare_results.py \
+  --baseline runs/resnet32_baseline/summary.json \
+  --compressed runs/final_block_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64/summary.json \
+  --search-result runs/block_channel_search_fast_*/best_result.json \
+  --output runs/final_comparison_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64.json
+```
+
+**配置3 对比命令：**
+```bash
+python compare_results.py \
+  --baseline runs/resnet32_baseline/summary.json \
+  --compressed runs/final_block_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64/summary.json \
+  --search-result runs/block_channel_search_fast_*/best_result.json \
+  --output runs/final_comparison_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64.json
+```
+
+**注意事项：**
+- `--search-result` 中的 `block_channel_search_fast_*` 需要替换成你实际本次搜索生成的目录名（例如 `block_channel_search_fast_20250525_143022`）。
+- 建议为每个配置单独生成一个 `final_comparison_xxx.json`，后面写论文或做表格时会方便很多。
+- 如果你只想快速看一个，可以先只跑配置2（fitness 最高的那个）。
 
 ---
 
-## 7. 主要脚本与优化
+## 9. 主要脚本与优化
 
 | 脚本 / 模块                        | 说明 |
 |------------------------------------|------|
-| `run_l40s_baseline_fast.sh`        | L40S 优化 baseline 训练 |
-| `run_l40s_block_search_fast.sh`    | L40S 优化 15 维 block 搜索 |
+| `prepare_cifar10.sh`               | 一键下载 + 解压 CIFAR-10（运行训练前必须执行） |
+| `run_h100_baseline_fast.sh`        | L40S/H100 优化 baseline 训练（默认 1024+BF16） |
+| `run_h100_block_search_fast.sh`    | L40S/H100 优化 15 维 block 搜索 |
 | `search_block_channels_ga_pso.py`  | 核心搜索脚本（支持 importance + inheritance） |
 | `train_block_width_resnet32.py`    | 支持 KD 的 block-width 训练 |
 | `src/utils/accelerate.py`          | BF16 / channels-last / TF32 工具 |
@@ -151,7 +359,7 @@ python compare_results.py \
 
 ---
 
-## 8. 配对关系说明
+## 10. 配对关系说明
 
 - **基础成熟版**：`resnet32_mature_ga_pso`（干净实现，适合理解算法）
 - **L40S 优化成熟版**：`resnet32_l40s_mature_ga_pso`（本项目，推荐在 L40S 上使用，速度与稳定性更好）
@@ -160,7 +368,7 @@ python compare_results.py \
 
 ---
 
-## 9. 参考文档
+## 11. 参考文档
 
 - `docs/block_level_search.md` — 15 维 block-level 搜索详细说明
 - `docs/experiment_plan.md` — 实验流程
