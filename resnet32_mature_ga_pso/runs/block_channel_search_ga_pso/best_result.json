@@ -2,9 +2,9 @@
   "best_algorithm": "pso",
   "best": {
     "channels": [
-      8,
-      8,
       12,
+      8,
+      8,
       8,
       8,
       20,
@@ -13,23 +13,23 @@
       16,
       16,
       48,
-      32,
       40,
+      32,
       40,
       64
     ],
-    "fitness": 16.461554204702175,
-    "test_acc": 26.75,
-    "train_acc": 24.58,
-    "test_loss": 1.8700289363861085,
-    "train_loss": 1.94472880859375,
-    "params": 209562,
-    "flops": 26501760,
-    "params_ratio": 0.45149239261107305,
-    "flops_ratio": 0.3848498761127086,
-    "params_compression_rate": 0.548507607388927,
-    "flops_reduction_rate": 0.6151501238872914,
-    "eval_time_sec": 2.3211824893951416,
+    "fitness": 14.86818404785076,
+    "test_acc": 25.3,
+    "train_acc": 22.3,
+    "test_loss": 1.9572720470428466,
+    "train_loss": 2.0058727294921876,
+    "params": 212122,
+    "flops": 26907264,
+    "params_ratio": 0.45700780344454645,
+    "flops_ratio": 0.3907384723479476,
+    "params_compression_rate": 0.5429921965554536,
+    "flops_reduction_rate": 0.6092615276520523,
+    "eval_time_sec": 1.9824974536895752,
     "epochs": 2
   },
   "baseline": {
@@ -53,6 +53,6 @@
     "params": 464154,
     "flops": 68862592
   },
-  "num_unique_evaluations": 57,
-  "total_search_time_sec": 399.44577407836914
+  "num_unique_evaluations": 47,
+  "total_search_time_sec": 386.83421993255615
 }
