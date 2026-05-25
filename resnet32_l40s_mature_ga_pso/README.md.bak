@@ -1,0 +1,264 @@
+# ResNet32 CIFAR-10：H100 快速版 + 15维 GA/PSO Block-Level 搜索 + KD
+
+这版是 mature 路线：
+
+```text
+baseline ResNet32 teacher
+→ 15 维 block-level 通道配置搜索
+→ sliced weight inheritance 加速候选评价
+→ GA / PSO 选出压缩结构
+→ 最终压缩模型用 teacher KD 恢复精度
+```
+
+搜索变量不是旧版 3 维：
+
+```text
+x = [c1, c2, c3]
+```
+
+而是新版 15 维：
+
+```text
+x = [
+  c1_1, c1_2, c1_3, c1_4, c1_5,
+  c2_1, c2_2, c2_3, c2_4, c2_5,
+  c3_1, c3_2, c3_3, c3_4, c3_5
+]
+```
+
+每个变量对应 ResNet32 中一个 residual block 的输出通道数。网络深度仍然是 ResNet32，不改变 block 数量。
+
+本包是纯代码包，不包含：
+
+```text
+data/
+runs/
+*.pt
+checkpoint
+CIFAR-10 数据
+```
+
+---
+
+## 1. 安装
+
+```bash
+pip install -r requirements.txt
+```
+
+项目默认读取：
+
+```text
+data/cifar-10-batches-py/
+```
+
+如果你原项目里已经有 `data/` 和 `runs/`，把这个代码包覆盖过去即可，不要删除原来的数据和 checkpoint。
+
+---
+
+## 2. 训练标准 ResNet32 baseline / teacher
+
+```bash
+bash scripts/run_h100_baseline_fast.sh
+```
+
+或手动运行：
+
+```bash
+python train_resnet32.py \
+  --run-name resnet32_baseline \
+  --epochs 200 \
+  --batch-size 1024 \
+  --lr 0.1 \
+  --milestones 100,150 \
+  --num-workers 8 \
+  --amp \
+  --amp-dtype bf16 \
+  --channels-last
+```
+
+输出 teacher checkpoint：
+
+```text
+runs/resnet32_baseline/best.pt
+runs/resnet32_baseline/summary.json
+```
+
+这个 checkpoint 同时用于：
+
+```text
+1. 搜索阶段候选模型 sliced weight inheritance
+2. 最终训练阶段 teacher KD
+```
+
+---
+
+## 3. 运行新版 15 维 GA/PSO 搜索
+
+```bash
+bash scripts/run_h100_search_fast.sh
+```
+
+等价于：
+
+```bash
+python search_block_channels_ga_pso.py \
+  --algorithm both \
+  --search-epochs 1 \
+  --ga-population 8 \
+  --ga-generations 5 \
+  --pso-particles 8 \
+  --pso-iterations 5 \
+  --max-train-samples 10000 \
+  --max-val-samples 5000 \
+  --batch-size 2048 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp \
+  --amp-dtype bf16 \
+  --channels-last
+```
+
+搜索输出在：
+
+```text
+runs/block_channel_search_fast_*/
+```
+
+里面包括：
+
+```text
+evaluations.csv
+ga_history.csv
+pso_history.csv
+ga_best.json
+pso_best.json
+best_result.json
+final_train_command.txt
+```
+
+`final_train_command.txt` 现在会自动生成 **带 KD 的最终训练命令**。
+
+---
+
+## 4. 完整训练搜索得到的最优 block-level 压缩模型：默认带 KD
+
+搜索结束后直接查看：
+
+```bash
+cat runs/block_channel_search_fast_*/final_train_command.txt
+```
+
+现在生成的命令会包含：
+
+```text
+--teacher-ckpt runs/resnet32_baseline/best.pt
+--kd-mode logits
+--kd-alpha 0.7
+--kd-temperature 4.0
+```
+
+手动训练一个 15 维配置，例如：
+
+```bash
+python train_block_width_resnet32.py \
+  --block-channels 16,16,16,16,16,32,28,24,24,28,64,56,48,48,56 \
+  --run-name final_block_example_kd \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 1024 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp \
+  --amp-dtype bf16 \
+  --channels-last
+```
+
+也支持 attention-transfer KD：
+
+```bash
+python train_block_width_resnet32.py \
+  --block-channels 16,16,16,16,16,32,28,24,24,28,64,56,48,48,56 \
+  --run-name final_block_example_kd_at \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 1024 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits_at \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --at-weight 25.0 \
+  --amp \
+  --amp-dtype bf16 \
+  --channels-last
+```
+
+`logits_at` 会额外对齐 teacher/student 的 stage attention map。这个模式不要开 `--compile`。
+
+---
+
+## 5. 对比 baseline 和最终压缩模型
+
+```bash
+python compare_results.py \
+  --baseline runs/resnet32_baseline/summary.json \
+  --compressed runs/final_block_example_kd/summary.json \
+  --output runs/final_block_comparison.json
+```
+
+输出包括：
+
+```text
+accuracy_drop
+params_compression_rate
+flops_reduction_rate
+compressed_block_channels
+compressed_kd_mode
+teacher_ckpt
+kd_alpha
+kd_temperature
+```
+
+---
+
+## 6. 查看某个 15 维配置的 Params/FLOPs
+
+```bash
+python model_info.py \
+  --block-channels 16,16,16,16,16,32,28,24,24,28,64,56,48,48,56
+```
+
+baseline 等价配置：
+
+```bash
+python model_info.py --block-channels 16,32,64
+```
+
+会自动扩展为：
+
+```text
+[16,16,16,16,16, 32,32,32,32,32, 64,64,64,64,64]
+```
+
+---
+
+## 7. 关键文件
+
+```text
+search_block_channels_ga_pso.py       # 15维 GA/PSO 搜索，输出 KD final command
+train_block_width_resnet32.py         # 15维压缩模型训练，支持 CE / logits KD / logits+AT KD
+src/models/resnet32_block_width.py    # BlockWidthResNet32 模型
+src/utils/kd.py                       # KD loss 与 attention-transfer loss
+src/data/cifar10.py                   # 本地 CIFAR-10 读取，不强依赖 torchvision
+scripts/run_h100_search_fast.sh       # H100 搜索脚本
+scripts/run_train_block_example.sh    # logits KD 最终训练示例
+scripts/run_train_block_kd_at_example.sh # logits+attention KD 示例
+```
+
+旧的 3 维 stage-level 脚本仍保留，仅用于对照实验。
