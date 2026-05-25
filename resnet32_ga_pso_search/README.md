@@ -1,13 +1,8 @@
 # ResNet32 CIFAR-10 + GA/PSO 通道配置搜索
 
-本项目用于《智能信息技术与应用》课程论文：
+本项目用于课程论文：在保持 ResNet32 深度不变的前提下，使用 GA/PSO 搜索三个 stage 的通道配置 `[c1, c2, c3]`，实现 stage-level 结构化压缩，并完整对比压缩前后指标。
 
-1. 先训练标准 CIFAR-10 ResNet32 baseline。
-2. 在不改变 ResNet32 深度结构的前提下，搜索三个 stage 的通道配置 `[c1, c2, c3]`。
-3. 使用 GA（遗传算法）和 PSO（粒子群优化）求解通道配置优化问题。
-4. 完整比较压缩前后 Accuracy、Params、FLOPs、运行时间。
-
-> 注意：本阶段是 **stage-level 结构化通道宽度压缩**。它不是 BN-gamma 真通道索引剪枝。目的：先把“baseline → 智能优化搜索 → 最优压缩模型 → 指标对比”的闭环跑通。
+> 说明：本阶段为 stage-level 通道宽度搜索（非真剪枝），目标是跑通 "baseline → 智能搜索 → 最优模型 → 指标对比" 闭环。
 
 ---
 
@@ -19,204 +14,124 @@ pip install -r requirements.txt
 
 ---
 
-## 2. 查看标准 ResNet32 参数量/FLOPs
+## 2. 快速开始
+
+### (1) 查看模型信息
+```bash
+python model_info.py                    # 标准 ResNet32
+python model_info.py --channels 16,24,48  # 指定压缩配置
+```
+
+### (2) 训练 baseline（含 Batch Size 消融）
+
+推荐在 baseline 阶段测试以下 batch size（CIFAR-10 实用区间）：
+
+- **128, 256, 512, 1024**
+
+**重要提示**：`train_resnet32.py` 不会自动根据 batch size 调整学习率。建议采用 **Linear Scaling Rule**：
+
+```
+lr = 0.1 × (batch_size / 128)
+```
+
+**完整学习率调度（200 epochs，milestones=[100,150], gamma=0.1）**：
+
+| Batch Size | 初始 LR | Epoch 0–99 | Epoch 100–149 | Epoch 150–199 |
+|------------|---------|------------|---------------|---------------|
+| 128        | 0.1     | 0.10       | 0.01          | 0.001         |
+| 256        | 0.2     | 0.20       | 0.02          | 0.002         |
+| 512        | 0.4     | 0.40       | 0.04          | 0.004         |
+| 1024       | 0.8     | 0.80       | 0.08          | 0.008         |
+
+milestones 在第 100 和 150 epoch 触发衰减（×0.1）。不同 batch size 仅按比例放大初始 LR，衰减时机和倍率保持一致。训练过程中每轮的当前学习率会记录在 `metrics.csv` 中，可用于验证。
+
+示例命令（200 epochs，标准 MultiStep 衰减）：
 
 ```bash
-python model_info.py
+# bs=128（标准 baseline）
+python train_resnet32.py --run-name resnet32_bs128 --batch-size 128 --lr 0.1 --milestones 100,150 --amp
+
+# bs=256
+python train_resnet32.py --run-name resnet32_bs256 --batch-size 256 --lr 0.2 --milestones 100,150 --amp
+
+# bs=512
+python train_resnet32.py --run-name resnet32_bs512 --batch-size 512 --lr 0.4 --milestones 100,150 --amp
+
+# bs=1024（大 batch 上限）
+python train_resnet32.py --run-name resnet32_bs1024 --batch-size 1024 --lr 0.8 --milestones 100,150 --amp
 ```
 
-查看某个压缩通道配置：
+输出示例：`runs/resnet32_bs{128,256,512,1024}/{best.pt, metrics.csv, summary.json}`
 
-```bash
-python model_info.py --channels 16,24,48
-```
+后续的通道搜索与最终压缩模型训练，建议基于其中一个 batch size 的 baseline 结果进行。
 
----
-
-## 3. 训练标准 ResNet32 baseline
-
-快速测试：
-
-```bash
-python train_resnet32.py --epochs 2 --batch-size 128 --lr 0.05 --milestones 1 --run-name resnet32_quick
-```
-
-正式训练：
-
-```bash
-python train_resnet32.py \
-  --run-name resnet32_baseline \
-  --epochs 200 \
-  --batch-size 128 \
-  --lr 0.1 \
-  --milestones 100,150 \
-  --amp
-```
-
-输出：
-
-```text
-runs/resnet32_baseline/best.pt
-runs/resnet32_baseline/last.pt
-runs/resnet32_baseline/metrics.csv
-runs/resnet32_baseline/summary.json
-```
-
----
-
-## 4. GA/PSO 搜索通道配置
-
-默认搜索空间：
-
-```text
-c1 ∈ {8, 12, 16}
-c2 ∈ {16, 20, 24, 28, 32}
-c3 ∈ {32, 40, 48, 56, 64}
-```
-
-即仍然是 ResNet32：
-
-```text
-conv1 + stage1(5 blocks) + stage2(5 blocks) + stage3(5 blocks) + GAP + FC
-```
-
-只是 stage 通道数从原始 `[16, 32, 64]` 变成搜索得到的 `[c1, c2, c3]`。
-
-快速搜索：
-
-```bash
-python search_channels_ga_pso.py \
-  --algorithm both \
-  --search-epochs 1 \
-  --ga-population 4 \
-  --ga-generations 2 \
-  --pso-particles 4 \
-  --pso-iterations 2 \
-  --max-train-samples 1000 \
-  --max-test-samples 500
-```
-
-较正式搜索：
-
+### (3) GA/PSO 搜索通道配置
 ```bash
 python search_channels_ga_pso.py \
   --algorithm both \
   --search-epochs 3 \
-  --ga-population 8 \
-  --ga-generations 5 \
-  --pso-particles 8 \
-  --pso-iterations 5 \
-  --max-train-samples 5000 \
-  --max-test-samples 2000 \
+  --ga-population 8 --ga-generations 5 \
+  --pso-particles 8 --pso-iterations 5 \
+  --max-train-samples 5000 --max-test-samples 2000 \
   --amp
 ```
+默认搜索空间：
+- `c1 ∈ {8,12,16}`、`c2 ∈ {16,20,24,28,32}`、`c3 ∈ {32,40,48,56,64}`
 
-输出：
+输出：`runs/channel_search_ga_pso/{search_config.json, evaluations.csv, ga_best.json, pso_best.json, best_result.json}`
 
-```text
-runs/channel_search_ga_pso/search_config.json
-runs/channel_search_ga_pso/evaluations.csv
-runs/channel_search_ga_pso/ga_history.csv
-runs/channel_search_ga_pso/pso_history.csv
-runs/channel_search_ga_pso/ga_best.json
-runs/channel_search_ga_pso/pso_best.json
-runs/channel_search_ga_pso/best_result.json
-```
-
----
-
-## 5. 训练搜索得到的最优压缩模型
-
-搜索完成后，终端会打印推荐命令。也可以手动运行：
-
+### (4) 训练最优压缩模型 + 对比
 ```bash
+# 按搜索结果中的推荐命令执行，例如：
 python train_width_resnet32.py \
-  --channels 16,24,48 \
-  --run-name final_width_16-24-48 \
-  --epochs 80 \
-  --milestones 40,60 \
-  --amp
-```
+  --channels 16,24,48 --run-name final_width_16-24-48 \
+  --epochs 80 --milestones 40,60 --amp
 
-输出：
-
-```text
-runs/final_width_16-24-48/best.pt
-runs/final_width_16-24-48/metrics.csv
-runs/final_width_16-24-48/summary.json
-```
-
----
-
-## 6. 对比 baseline 和压缩模型
-
-```bash
 python compare_results.py \
-  --baseline runs/resnet32_baseline/summary.json \
+  --baseline runs/resnet32_bs128/summary.json \
   --compressed runs/final_width_16-24-48/summary.json \
   --output runs/final_comparison.json
 ```
 
-输出字段包括：
+---
 
-```text
-baseline_best_acc
-compressed_best_acc
-accuracy_drop
-params_compression_rate
-flops_reduction_rate
-baseline_train_time_sec
-compressed_train_time_sec
+## 3. 适应度函数
+
+```
+Fitness(x) = Acc(x) - 100 * [λp·Params(x)/Params0 + λf·FLOPs(x)/FLOPs0]
 ```
 
-这几个指标可以直接放进课程论文结果表。
+- `x = [c1, c2, c3]`
+- 默认 `λp = λf = 0.15`（可通过 `--lambda-p` / `--lambda-f` 调整）
+- 精度优先 → 减小 λ；压缩优先 → 增大 λ
 
 ---
 
-## 7. 适应度函数
+## 4. 主要脚本
 
-搜索阶段的适应度函数：
+| 脚本 | 用途 |
+|------|------|
+| `train_resnet32.py` | 训练标准 ResNet32 baseline（支持不同 batch size） |
+| `search_channels_ga_pso.py` | GA/PSO 搜索通道配置 |
+| `train_width_resnet32.py` | 训练搜索得到的压缩模型 |
+| `compare_results.py` | baseline vs compressed 指标对比 |
+| `model_info.py` | 查看 Params / FLOPs |
 
-```text
-Fitness(x) = Acc(x) - 100 * [ λp * Params(x)/Params0 + λf * FLOPs(x)/FLOPs0 ]
-```
-
-其中：
-
-```text
-x = [c1, c2, c3]
-Acc(x)：候选模型短训练后的验证准确率
-Params0 / FLOPs0：原始 ResNet32 的参数量和 FLOPs
-λp / λf：参数量和计算量惩罚权重
-```
-
-默认：
-
-```text
-λp = 0.15
-λf = 0.15
-```
-
-如果你更重视精度，减小 λ；如果你更重视压缩率，增大 λ。
+核心模块：
+- `src/models/resnet32_cifar.py` — 标准 ResNet32
+- `src/models/resnet32_width.py` — 可变通道 ResNet32（深度仍为 32）
+- `src/data/cifar10.py` — CIFAR-10 dataloader（支持子集加速搜索）
 
 ---
 
-## 8. 文件结构
+## 5. 输出目录结构
 
-```text
-train_resnet32.py             # 标准 ResNet32 baseline 训练
-evaluate_resnet32.py          # 标准 ResNet32 checkpoint 评估
-model_info.py                 # 查看标准/压缩配置的 Params 与 FLOPs
-search_channels_ga_pso.py     # GA/PSO 搜索通道配置
-train_width_resnet32.py       # 训练搜索得到的压缩 ResNet32
-evaluate_width_resnet32.py    # 评估压缩 ResNet32 checkpoint
-compare_results.py            # baseline vs compressed 指标对比
-
-src/models/resnet32_cifar.py  # 标准 ResNet32
-src/models/resnet32_width.py  # 可变通道 ResNet32，深度仍为 32
-src/data/cifar10.py           # CIFAR-10 dataloader，支持子集搜索
-src/utils/                    # seed/checkpoint/metrics
-
-docs/optimization_model.md    # 优化问题建模说明
-docs/experiment_plan.md       # 实验流程说明
 ```
+runs/
+├── resnet32_bs{128,256,512,1024}/   # 不同 batch size 的 baseline 结果
+├── channel_search_ga_pso/           # 搜索过程与最优配置
+└── final_width_*/                   # 最终压缩模型训练结果
+```
+
+课程论文核心指标（`final_comparison.json`）：
+- `accuracy_drop`、`params_compression_rate`、`flops_reduction_rate`、`train_time_sec` 等。

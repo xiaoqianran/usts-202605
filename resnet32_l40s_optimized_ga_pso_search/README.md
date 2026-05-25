@@ -1,17 +1,17 @@
-# ResNet32 CIFAR-10 + GA/PSO 通道配置搜索
+# ResNet32 CIFAR-10 + GA/PSO（L40S Optimized）
 
-本项目用于《智能信息技术与应用》课程论文：
+本项目为 L40S 优化增强版，用于课程论文：
 
-1. 先训练标准 CIFAR-10 ResNet32 baseline。
-2. 在不改变 ResNet32 深度结构的前提下，搜索三个 stage 的通道配置 `[c1, c2, c3]`。
-3. 使用 GA（遗传算法）和 PSO（粒子群优化）求解通道配置优化问题。
-4. 完整比较压缩前后 Accuracy、Params、FLOPs、运行时间。
+- 保持 ResNet32 深度不变，使用 GA/PSO 搜索 `[c1, c2, c3]` 通道配置
+- 默认采用 **BF16 混合精度**（`--amp --amp-dtype bf16`）
+- 集成 channels-last、TF32、权重继承（`--baseline-ckpt`）、改进 fitness 等加速与稳定手段
+- 完整对比压缩前后 Accuracy、Params、FLOPs、训练时间
 
-> 注意：本阶段是 **stage-level 结构化通道宽度压缩**。它不是 BN-gamma 真通道索引剪枝。目的：先把“baseline → 智能优化搜索 → 最优压缩模型 → 指标对比”的闭环跑通。
+> 说明：本阶段为 stage-level 通道宽度搜索（非真剪枝）。目标是跑通 “baseline → 智能搜索 → 最优模型 → 指标对比” 闭环，并利用 L40S 硬件特性获得更好速度与稳定性。
 
 ---
 
-## 安装
+## 1. 安装
 
 ```bash
 pip install -r requirements.txt
@@ -19,301 +19,82 @@ pip install -r requirements.txt
 
 ---
 
-## 查看标准 ResNet32 参数量/FLOPs
+## 2. 快速开始
 
+### (1) 查看模型信息
 ```bash
 python model_info.py
-```
-
-查看某个压缩通道配置：
-
-```bash
 python model_info.py --channels 16,24,48
 ```
 
----
+### (2) 训练 baseline（Batch Size 消融，推荐 BF16）
 
-## 1. 训练标准 ResNet32 baseline
+本版本推荐在 baseline 阶段测试以下 batch size：
 
-快速测试：
+- **128, 256, 512, 1024**
 
-```bash
-python train_resnet32.py --epochs 2 --batch-size 128 --lr 0.05 --milestones 1 --run-name resnet32_quick
+**重要**：脚本不会自动缩放学习率，建议采用 Linear Scaling Rule：
+
+```
+lr = 0.1 × (batch_size / 128)
 ```
 
-正式训练：
+推荐使用 **BF16 混合精度**（本项目默认优化方向）：
 
 ```bash
+# bs=128（标准 baseline）
 python train_resnet32.py \
-  --run-name resnet32_baseline \
-  --epochs 200 \
-  --batch-size 128 \
-  --lr 0.1 \
+  --run-name resnet32_bs128 \
+  --batch-size 128 --lr 0.1 \
   --milestones 100,150 \
-  --amp
+  --amp --amp-dtype bf16 --channels-last
+
+# bs=256
+python train_resnet32.py \
+  --run-name resnet32_bs256 \
+  --batch-size 256 --lr 0.2 \
+  --milestones 100,150 \
+  --amp --amp-dtype bf16 --channels-last
+
+# bs=512
+python train_resnet32.py \
+  --run-name resnet32_bs512 \
+  --batch-size 512 --lr 0.4 \
+  --milestones 100,150 \
+  --amp --amp-dtype bf16 --channels-last
+
+# bs=1024（大 batch）
+python train_resnet32.py \
+  --run-name resnet32_bs1024 \
+  --batch-size 1024 --lr 0.8 \
+  --milestones 100,150 \
+  --amp --amp-dtype bf16 --channels-last
 ```
 
-输出：
+**完整学习率调度（200 epochs，milestones=[100,150], gamma=0.1）**：
 
-```text
-runs/resnet32_baseline/best.pt
-runs/resnet32_baseline/last.pt
-runs/resnet32_baseline/metrics.csv
-runs/resnet32_baseline/summary.json
-```
+| Batch Size | 初始 LR | Epoch 0–99 | Epoch 100–149 | Epoch 150–199 |
+|------------|---------|------------|---------------|---------------|
+| 128        | 0.1     | 0.10       | 0.01          | 0.001         |
+| 256        | 0.2     | 0.20       | 0.02          | 0.002         |
+| 512        | 0.4     | 0.40       | 0.04          | 0.004         |
+| 1024       | 0.8     | 0.80       | 0.08          | 0.008         |
+
+每轮当前学习率会记录在 `metrics.csv`，可用于验证。
+
+输出示例：`runs/resnet32_bs{128,256,512,1024}/{best.pt, metrics.csv, summary.json}`
 
 ---
 
-## 2. GA/PSO 搜索通道配置
+### (3) GA/PSO 搜索通道配置（推荐优化路径）
 
-默认搜索空间：
-
-```text
-c1 ∈ {8, 12, 16}
-c2 ∈ {16, 20, 24, 28, 32}
-c3 ∈ {32, 40, 48, 56, 64}
-```
-
-即仍然是 ResNet32：
-
-```text
-conv1 + stage1(5 blocks) + stage2(5 blocks) + stage3(5 blocks) + GAP + FC
-```
-
-只是 stage 通道数从原始 `[16, 32, 64]` 变成搜索得到的 `[c1, c2, c3]`。
-
-快速搜索：
+推荐使用 L40S 优化配置（BF16 + channels-last + 权重继承 + 改进 fitness）：
 
 ```bash
-python search_channels_ga_pso.py \
-  --algorithm both \
-  --search-epochs 1 \
-  --ga-population 4 \
-  --ga-generations 2 \
-  --pso-particles 4 \
-  --pso-iterations 2 \
-  --max-train-samples 1000 \
-  --max-test-samples 500
-```
-
-【这个会出现不压缩】
-```bash
-python search_channels_ga_pso.py \
-  --algorithm both \
-  --search-epochs 3 \
-  --ga-population 8 \
-  --ga-generations 5 \
-  --pso-particles 8 \
-  --pso-iterations 5 \
-  --max-train-samples 5000 \
-  --max-test-samples 2000 \
-  --amp
-```
-
-输出：
-
-```text
-runs/channel_search_ga_pso/search_config.json
-runs/channel_search_ga_pso/evaluations.csv
-runs/channel_search_ga_pso/ga_history.csv
-runs/channel_search_ga_pso/pso_history.csv
-runs/channel_search_ga_pso/ga_best.json
-runs/channel_search_ga_pso/pso_best.json
-runs/channel_search_ga_pso/best_result.json
-```
-
-
-## 2.2 改进搜索空间
-
-stage1: {12, 16}
-stage2: {20, 24, 28}
-stage3: {40, 48, 56}
-
-较正式搜索：
-
-python search_channels_ga_pso.py \
-  --algorithm both \
-  --space "12,16;20,24,28;40,48,56" \
-  --search-epochs 1 \
-  --ga-population 8 \
-  --ga-generations 5 \
-  --pso-particles 8 \
-  --pso-iterations 5 \
-  --max-train-samples 10000 \
-  --max-val-samples 5000 \
-  --batch-size 2048 \
-  --num-workers 8 \
-  --baseline-ckpt runs/resnet32_baseline/best.pt \
-  --amp \
-  --amp-dtype bf16 \
-  --channels-last
-
----
-
-## 3. 训练搜索得到的最优压缩模型
-
-搜索完成后，终端会打印推荐命令。也可以手动运行：
-
-
-### 基于 2.2
-
-<!-- 这个和下面的是一样的
-python train_width_resnet32.py --channels 16,24,56 --run-name final_pso_16-24-56 --epochs 80 --milestones 40,60 --batch-size 1024 --num-workers 8 --amp --amp-dtype bf16 --channels-last --baseline-ckpt runs/resnet32_baseline/best.pt
-直接看下面的 -->
-
-```bash
-python train_width_resnet32.py \
-  --channels 16,24,56 \
-  --run-name final_pso_16-24-56 \
-  --epochs 80 \
-  --milestones 40,60 \
-  --batch-size 1024 \
-  --num-workers 8 \
-  --amp \
-  --amp-dtype bf16 \
-  --channels-last \
-  --baseline-ckpt runs/resnet32_baseline/best.pt
-```
-
-
-
-```bash
-python train_width_resnet32.py \
-  --channels 16,24,56 \
-  --run-name final_width_16-24-56 \
-  --epochs 80 \
-  --milestones 40,60 \
-  --amp
-```
-
-
-
-### 原始的
-```bash
-python train_width_resnet32.py \
-  --channels 16,24,48 \
-  --run-name final_width_16-24-48 \
-  --epochs 80 \
-  --milestones 40,60 \
-  --amp
-```
-
-输出：
-
-```text
-runs/final_width_16-24-48/best.pt
-runs/final_width_16-24-48/metrics.csv
-runs/final_width_16-24-48/summary.json
-```
-
----
-
-## 4. 对比 baseline 和压缩模型
-
-```bash
-python compare_results.py \
-  --baseline runs/resnet32_baseline/summary.json \
-  --compressed runs/final_width_16-24-48/summary.json \
-  --output runs/final_comparison.json
-
-
-python compare_results.py \
-  --baseline runs/resnet32_baseline/summary.json \
-  --compressed runs/final_width_16-24-56/summary.json \
-  --output runs/final_comparison.json
-
-python compare_results.py \
-  --baseline runs/resnet32_baseline/summary.json \
-  --compressed runs/final_pso_16-24-56/summary.json \
-  --output runs/final_comparison.json
-
-```
-
-输出字段包括：
-
-```text
-baseline_best_acc
-compressed_best_acc
-accuracy_drop
-params_compression_rate
-flops_reduction_rate
-baseline_train_time_sec
-compressed_train_time_sec
-```
-
-这几个指标可以直接放进课程论文结果表。
-
----
-
-## 5. 适应度函数
-
-搜索阶段的适应度函数：
-
-```text
-Fitness(x) = Acc(x) - 100 * [ λp * Params(x)/Params0 + λf * FLOPs(x)/FLOPs0 ]
-```
-
-其中：
-
-```text
-x = [c1, c2, c3]
-Acc(x)：候选模型短训练后的验证准确率
-Params0 / FLOPs0：原始 ResNet32 的参数量和 FLOPs
-λp / λf：参数量和计算量惩罚权重
-```
-
-默认：
-
-```text
-λp = 0.15
-λf = 0.15
-```
-
-如果你更重视精度，减小 λ；如果你更重视压缩率，增大 λ。
-
----
-
-## 6. 文件结构
-
-```text
-train_resnet32.py             # 标准 ResNet32 baseline 训练
-evaluate_resnet32.py          # 标准 ResNet32 checkpoint 评估
-model_info.py                 # 查看标准/压缩配置的 Params 与 FLOPs
-search_channels_ga_pso.py     # GA/PSO 搜索通道配置
-train_width_resnet32.py       # 训练搜索得到的压缩 ResNet32
-evaluate_width_resnet32.py    # 评估压缩 ResNet32 checkpoint
-compare_results.py            # baseline vs compressed 指标对比
-
-src/models/resnet32_cifar.py  # 标准 ResNet32
-src/models/resnet32_width.py  # 可变通道 ResNet32，深度仍为 32
-src/data/cifar10.py           # CIFAR-10 dataloader，支持子集搜索
-src/utils/                    # seed/checkpoint/metrics
-
-docs/optimization_model.md    # 优化问题建模说明
-docs/experiment_plan.md       # 实验流程说明
-```
-
----
-
-## L40S Optimized 加速版建议
-
-本包已针对 L40S 进行了优化（同时兼容其他现代 GPU）：
-
-- 默认使用 BF16 混合精度（`--amp --amp-dtype bf16`）
-- 支持 `--channels-last`
-- 支持 TF32 + cudnn benchmark
-- 搜索阶段支持从 baseline checkpoint 继承权重（`--baseline-ckpt`）
-- 改进的 fitness 函数（相对短训练 baseline 的精度约束 + penalty）
-
-推荐先用已有 baseline checkpoint 搜索：
-
-```bash
+# 快速搜索（已有 baseline 时推荐）
 bash scripts/run_l40s_search_fast.sh
-```
 
-或者手动运行：
-
-```bash
+# 或手动：
 python search_channels_ga_pso.py \
   --algorithm both \
   --search-epochs 1 \
@@ -325,14 +106,90 @@ python search_channels_ga_pso.py \
   --amp --amp-dtype bf16 --channels-last
 ```
 
-搜索完成后，直接查看最终训练命令：
+默认搜索空间（可通过 `--space` 自定义）：
+- `c1 ∈ {8,12,16}`、`c2 ∈ {16,20,24,28,32}`、`c3 ∈ {32,40,48,56,64}`
 
+核心优化特性：
+- BF16 混合精度（更稳定）
+- `--baseline-ckpt` 权重继承（短训练也能得到可靠 proxy）
+- 改进 fitness（相对短 baseline 的精度约束 + penalty）
+- 支持 train/val split 避免 test 泄漏
+
+输出：`runs/channel_search_fast_*/{best_result.json, final_train_command.txt, ...}`
+
+搜索完成后直接查看推荐的最终训练命令：
 ```bash
 cat runs/channel_search_fast_*/final_train_command.txt
 ```
 
-更多说明见：
+---
 
-```text
-docs/l40s_optimized_notes.md
+### (4) 训练最优压缩模型 + 对比
+
+按搜索输出的推荐命令执行，例如：
+
+```bash
+python train_width_resnet32.py \
+  --channels 16,24,56 \
+  --run-name final_pso_16-24-56 \
+  --epochs 80 --milestones 40,60 \
+  --batch-size 1024 --num-workers 8 \
+  --amp --amp-dtype bf16 --channels-last \
+  --baseline-ckpt runs/resnet32_baseline/best.pt
 ```
+
+对比：
+```bash
+python compare_results.py \
+  --baseline runs/resnet32_bs128/summary.json \
+  --compressed runs/final_pso_16-24-56/summary.json \
+  --output runs/final_comparison.json
+```
+
+---
+
+## 3. 适应度函数
+
+**基础版**（与老版本兼容）：
+```
+Fitness(x) = Acc(x) - 100 * [λp·Params(x)/Params0 + λf·FLOPs(x)/FLOPs0]
+```
+
+**本优化版推荐**：使用相对短训练 baseline 的约束版本（搜索脚本默认已启用），可有效避免搜索出过小的模型。
+
+---
+
+## 4. 主要脚本与优化特性
+
+| 脚本 / 特性              | 说明 |
+|--------------------------|------|
+| `train_resnet32.py`      | baseline 训练（支持 BF16 + channels-last） |
+| `search_channels_ga_pso.py` | GA/PSO 搜索（支持权重继承 + 改进 fitness） |
+| `train_width_resnet32.py` | 训练最终压缩模型 |
+| `run_l40s_*_fast.sh`     | L40S 一键快速脚本 |
+| `src/utils/accelerate.py` | BF16/FP16 自动选择、GradScaler 智能开关、TF32 设置 |
+| `src/utils/checkpoint.py` | `load_sliced_baseline_weights`（权重继承核心） |
+
+推荐始终开启：`--amp --amp-dtype bf16 --channels-last`
+
+---
+
+## 5. 输出目录结构
+
+```
+runs/
+├── resnet32_bs{128,256,512,1024}/     # 不同 batch size baseline（BF16）
+├── channel_search_fast_*/             # 搜索过程 + 最优配置 + 推荐命令
+├── final_* /                          # 最终压缩模型训练结果
+└── final_comparison.json              # 论文核心对比指标
+```
+
+---
+
+## 6. 参考文档
+
+- `docs/l40s_optimized_notes.md` — L40S 优化改动详细说明
+- `docs/optimization_model.md` — 优化问题建模
+- `docs/experiment_plan.md` — 实验流程建议
+
+如需恢复原始风格，可参考备份文件 `README.md.bak`。
