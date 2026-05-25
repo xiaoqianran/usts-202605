@@ -1,0 +1,35 @@
+{
+  "algorithm": "both",
+  "best_algorithm": "ga",
+  "best": {
+    "channels": [
+      8,
+      16,
+      32
+    ],
+    "fitness": 24.698616164407632,
+    "test_acc": 32.25,
+    "train_acc": 30.78,
+    "test_loss": 1.7471828851699829,
+    "train_loss": 1.791110009765625,
+    "params": 116882,
+    "flops": 17326400,
+    "params_ratio": 0.2518172847804823,
+    "flops_ratio": 0.251608304259009,
+    "params_compression_rate": 0.7481827152195177,
+    "flops_reduction_rate": 0.7483916957409911,
+    "eval_time_sec": 41.10604000091553,
+    "epochs": 3
+  },
+  "baseline": {
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "params": 464154,
+    "flops": 68862592
+  },
+  "num_unique_evaluations": 30,
+  "total_search_time_sec": 318.1707389354706
+}
