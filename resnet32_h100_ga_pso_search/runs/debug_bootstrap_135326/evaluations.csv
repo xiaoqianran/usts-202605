@@ -1,0 +1,1 @@
+channels,fitness,val_acc,train_acc,val_loss,train_loss,params,flops,params_ratio,flops_ratio,params_compression_rate,flops_reduction_rate,below_baseline_short_by,penalty,eval_time_sec,epochs,inherited

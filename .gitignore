@@ -150,6 +150,7 @@ ehthumbs.db
 Thumbs.db
 
 # ML / Deep Learning artifacts
+# IMPORTANT: Model weights and large binary checkpoints are NEVER committed
 *.pt
 *.pth
 *.ckpt
@@ -158,18 +159,27 @@ Thumbs.db
 *.onnx
 *.pb
 *.tflite
+# Common checkpoint / weight naming patterns (extra safety)
+**/best*.pt
+**/last*.pt
+**/model_*.pt
+**/checkpoint*.pt
 
-# Experiment outputs and runs (generated)
-runs/
-**/runs/
-outputs/
-**/outputs/
-**/*_outputs/
-**/*_runs/
+# Experiment results policy (updated to match user request):
+# We COMMIT experimental OUTPUTS and results for reproducibility:
+#   - metrics_*.csv / *.json, predictions, pcc curves, training history
+#   - plots and figures from experiments
+#   - split summaries, args, configs
+# Large RAW DATASETS and model weights stay out (see below).
 
-# Large datasets (MSTAR SAR images ~thousands of files)
+# NO blanket ignore for outputs/ or runs/ — we want the result files.
+# (Individual heavy binaries inside them are still blocked by *.pt rules above.)
+
+# Large / problematic datasets (do NOT commit full copies)
+# MSTAR: 5000+ SAR images, bad for git (many small files)
 data/MSTAR/
 **/MSTAR/
+# CIFAR-10: large tarball + extracted, duplicated across many resnet projects
 **/cifar-10-batches-py/
 **/cifar-10-python.tar.gz
 
@@ -181,8 +191,9 @@ zip0/
 .lightning*
 *.lightning_upload
 
-# Battery data - keep small extracted .mat if reasonable, but ignore if large
-# (current extracted are small .mat files, allowed by not matching above)
+# Battery raw data: the extracted .mat files (~54MB total) ARE committed
+# because they are the core dataset for the SOH experiments and are reasonable size.
+# (No ignore rule needed — they are already tracked.)
 
 # Other temp
 *.tmp

@@ -1,0 +1,20 @@
+{
+  "channels": [
+    8,
+    20,
+    32
+  ],
+  "fitness": 25.99000884116456,
+  "test_acc": 34.65,
+  "train_acc": 32.4,
+  "test_loss": 1.727316171646118,
+  "train_loss": 1.7804605712890624,
+  "params": 130066,
+  "flops": 20459840,
+  "params_ratio": 0.2802216505728702,
+  "flops_ratio": 0.29711109334949226,
+  "params_compression_rate": 0.7197783494271298,
+  "flops_reduction_rate": 0.7028889066505077,
+  "eval_time_sec": 4.279904365539551,
+  "epochs": 3
+}

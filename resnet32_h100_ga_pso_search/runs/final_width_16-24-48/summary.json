@@ -1,0 +1,19 @@
+{
+  "run_name": "final_width_16-24-48",
+  "model": "WidthResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    16,
+    24,
+    48
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 80,
+  "best_acc": 88.14000009765626,
+  "best_epoch": 70,
+  "params": 272858,
+  "flops": 49471968,
+  "total_train_time_sec": 359.87097120285034,
+  "checkpoint_best": "runs/final_width_16-24-48/best.pt",
+  "checkpoint_last": "runs/final_width_16-24-48/last.pt"
+}

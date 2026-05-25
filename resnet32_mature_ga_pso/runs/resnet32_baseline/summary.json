@@ -1,0 +1,18 @@
+{
+  "run_name": "resnet32_baseline",
+  "model": "ResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    16,
+    32,
+    64
+  ],
+  "epochs": 200,
+  "best_acc": 93.11,
+  "best_epoch": 151,
+  "params": 464154,
+  "flops": 68862592,
+  "total_train_time_sec": 1289.5462594032288,
+  "checkpoint_best": "runs/resnet32_baseline/best.pt",
+  "checkpoint_last": "runs/resnet32_baseline/last.pt"
+}

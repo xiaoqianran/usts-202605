@@ -1,0 +1,59 @@
+{
+  "algorithm": "both",
+  "data_dir": "data",
+  "save_dir": "runs",
+  "run_name": null,
+  "space": "12,16;20,24,28;40,48,56",
+  "search_epochs": 1,
+  "batch_size": 2048,
+  "lr": 0.02,
+  "momentum": 0.9,
+  "weight_decay": 0.0001,
+  "num_workers": 8,
+  "val_size": 5000,
+  "max_train_samples": 10000,
+  "max_val_samples": 5000,
+  "max_test_samples": null,
+  "baseline_ckpt": "runs/resnet32_baseline/best.pt",
+  "lambda_params": 0.05,
+  "lambda_flops": 0.1,
+  "allowed_short_acc_drop": 3.0,
+  "penalty_mu": 5.0,
+  "seed": 42,
+  "device": "cuda",
+  "amp": true,
+  "amp_dtype": "bf16",
+  "channels_last": true,
+  "compile": false,
+  "ga_population": 8,
+  "ga_generations": 5,
+  "ga_elites": 2,
+  "ga_crossover_rate": 0.8,
+  "ga_mutation_rate": 0.25,
+  "pso_particles": 8,
+  "pso_iterations": 5,
+  "pso_w": 0.6,
+  "pso_c1": 1.4,
+  "pso_c2": 1.4,
+  "search_space": [
+    [
+      12,
+      16
+    ],
+    [
+      20,
+      24,
+      28
+    ],
+    [
+      40,
+      48,
+      56
+    ]
+  ],
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ]
+}
