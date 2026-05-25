@@ -12,18 +12,18 @@ x = [
 
 其中每个变量表示一个 residual block 的输出通道数。模型深度仍然是 CIFAR-10 ResNet32：每个 stage 5 个 residual blocks，总共 15 个 blocks。
 
-默认搜索空间采用保守设置：
+默认搜索空间已恢复为与第一版主项目一致的 aggressive 设置（包含 8）：
 
 ```text
-stage1 每个 block: {12, 16}
-stage2 每个 block: {20, 24, 28, 32}
-stage3 每个 block: {40, 48, 56, 64}
+stage1 每个 block: {8, 12, 16}
+stage2 每个 block: {16, 20, 24, 28, 32}
+stage3 每个 block: {32, 40, 48, 56, 64}
 ```
 
 也可以用 `--space` 自定义。如果只给 3 组，会自动扩展成 15 维：
 
 ```bash
---space '12,16;20,24,28,32;40,48,56,64'
+--space '8,12,16;16,20,24,28,32;32,40,48,56,64'
 ```
 
 如果给 15 组，则逐 block 指定搜索空间。

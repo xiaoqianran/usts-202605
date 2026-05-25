@@ -17,7 +17,7 @@ import torch.optim as optim
 from tqdm import tqdm
 
 from src.data import get_cifar10_train_val_loaders
-from src.models import block_width_resnet32, BASELINE_BLOCK_CHANNELS
+from src.models import width_resnet32
 from src.utils.accelerate import (
     autocast_context,
     make_grad_scaler,
@@ -30,22 +30,20 @@ from src.utils.checkpoint import load_sliced_baseline_weights
 from src.utils.metrics import AverageMeter, accuracy, count_parameters, human_number, measure_flops
 from src.utils.seed import set_seed
 
-Candidate = Tuple[int, ...]
+Candidate = Tuple[int, int, int]
 
 # ========================
-# 15-D block-level search space（与第一版主项目保持一致，恢复 aggressive 版本）
+# 搜索空间定义（与第一版主项目保持一致，恢复 aggressive 版本）
 # ========================
-# 每个 block 独立一个通道数，共 15 维。
-# 为了与第一版一致，这里使用 aggressive space（包含 8）。
-# 注意：15 维搜索对精度非常敏感，包含小通道后建议适当放宽 allowed_short_acc_drop 或降低 penalty。
-DEFAULT_STAGE_SPACE: list[list[int]] = [
-    [8, 12, 16],                   # stage1 每个 block 可选
-    [16, 20, 24, 28, 32],          # stage2 每个 block 可选
-    [32, 40, 48, 56, 64],          # stage3 每个 block 可选
+# 每个子列表对应 ResNet32 一个阶段（stage）可选的通道宽度。
+# 三阶段分别对应浅层→中层→深层的特征通道数。
+# 注意：成熟版 block-level 搜索对空间更敏感，包含 8 后完整训练时需重点观察精度下降。
+DEFAULT_SPACE: list[list[int]] = [
+    [8, 12, 16],                   # 第一阶段可选通道宽度
+    [16, 20, 24, 28, 32],          # 第二阶段可选通道宽度
+    [32, 40, 48, 56, 64],          # 第三阶段可选通道宽度
 ]
-# 自动扩展为 15 维（每 stage 5 个 block）
-DEFAULT_SPACE = [DEFAULT_STAGE_SPACE[0] for _ in range(5)] + [DEFAULT_STAGE_SPACE[1] for _ in range(5)] + [DEFAULT_STAGE_SPACE[2] for _ in range(5)]
-BASELINE_CHANNELS: Candidate = tuple(BASELINE_BLOCK_CHANNELS)
+BASELINE_CHANNELS: Candidate = (16, 32, 64)
 
 
 @dataclass
@@ -78,12 +76,9 @@ def parse_space(s: str | None) -> list[list[int]]:
         if not vals:
             raise argparse.ArgumentTypeError("empty group in search space")
         groups.append(vals)
-    if len(groups) == 3:
-        # Compact form: stage1;stage2;stage3, expanded to 5 blocks per stage.
-        return [groups[0] for _ in range(5)] + [groups[1] for _ in range(5)] + [groups[2] for _ in range(5)]
-    if len(groups) == 15:
-        return groups
-    raise argparse.ArgumentTypeError("space must have either 3 stage groups or 15 block groups separated by ';'")
+    if len(groups) != 3:
+        raise argparse.ArgumentTypeError("space must have 3 groups separated by ';'")
+    return groups
 
 
 def candidate_to_key(channels: Sequence[int]) -> str:
@@ -119,7 +114,7 @@ def decode_position(position: Sequence[float], space: list[list[int]]) -> Candid
 
 
 def model_cost(channels: Sequence[int], device: torch.device) -> tuple[int, int]:
-    m = block_width_resnet32(block_channels=channels, num_classes=10).to(device)
+    m = width_resnet32(stage_channels=channels, num_classes=10).to(device)
     params = count_parameters(m)
     flops = measure_flops(m, input_size=(3, 32, 32), device=device)
     del m
@@ -191,7 +186,7 @@ class FitnessEvaluator:
         write_csv_header_if_needed(self.eval_csv, ["channels", *[f for f in fields if f != "channels"]])
 
     def _make_model(self, channels: Sequence[int]):
-        model = block_width_resnet32(block_channels=channels, num_classes=10).to(self.device)
+        model = width_resnet32(stage_channels=channels, num_classes=10).to(self.device)
         inherited = False
         if self.args.baseline_ckpt and Path(self.args.baseline_ckpt).exists():
             load_sliced_baseline_weights(model, self.args.baseline_ckpt, verbose=False)
@@ -201,14 +196,9 @@ class FitnessEvaluator:
 
     def _fitness(self, val_acc: float, params_ratio: float, flops_ratio: float) -> tuple[float, float, float]:
         # Constraint is relative to same-budget short baseline, not full 200-epoch baseline.
-        if not hasattr(self, "baseline_short_acc"):
-            # First call is the baseline itself; penalty is computed after we know its acc.
-            below = 0.0
-            penalty = 0.0
-        else:
-            threshold = self.baseline_short_acc - self.args.allowed_short_acc_drop
-            below = max(0.0, threshold - val_acc)
-            penalty = self.args.penalty_mu * below
+        threshold = self.baseline_short_acc - self.args.allowed_short_acc_drop
+        below = max(0.0, threshold - val_acc)
+        penalty = self.args.penalty_mu * below
         fitness = val_acc - 100.0 * (self.args.lambda_params * params_ratio + self.args.lambda_flops * flops_ratio) - penalty
         return fitness, below, penalty
 
@@ -286,7 +276,7 @@ def run_ga(args, evaluator: FitnessEvaluator, space: list[list[int]], out_dir: P
         next_pop = list(elites)
         while len(next_pop) < args.ga_population:
             p1, p2 = tournament_select(population, scores, rng), tournament_select(population, scores, rng)
-            child = tuple(p1[i] if rng.random() < 0.5 else p2[i] for i in range(len(space))) if rng.random() < args.ga_crossover_rate else p1
+            child = tuple(p1[i] if rng.random() < 0.5 else p2[i] for i in range(3)) if rng.random() < args.ga_crossover_rate else p1
             child = list(child)
             for i, group in enumerate(space):
                 if rng.random() < args.ga_mutation_rate:
@@ -302,7 +292,7 @@ def run_pso(args, evaluator: FitnessEvaluator, space: list[list[int]], out_dir: 
     rng = random.Random(args.seed + 202)
     history_csv = out_dir / "pso_history.csv"
     write_csv_header_if_needed(history_csv, ["iteration", "best_channels", "best_fitness", "best_val_acc", "best_params_ratio", "best_flops_ratio"])
-    dims, upper = len(space), [len(g) - 1 for g in space]
+    dims, upper = 3, [len(g) - 1 for g in space]
     positions = [[rng.uniform(0, upper[d]) for d in range(dims)] for _ in range(args.pso_particles)]
     velocities = [[0.0] * dims for _ in range(args.pso_particles)]
     pbest_pos = [p[:] for p in positions]
@@ -328,13 +318,13 @@ def run_pso(args, evaluator: FitnessEvaluator, space: list[list[int]], out_dir: 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fast GA/PSO 15-D block-channel search for CIFAR-10 ResNet32 compression")
+    parser = argparse.ArgumentParser(description="Fast GA/PSO stage-channel search for CIFAR-10 ResNet32 compression")
     parser.add_argument("--algorithm", choices=["ga", "pso", "both"], default="both")
     parser.add_argument("--data-dir", default="data")
     parser.add_argument("--save-dir", default="runs")
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--space", default=None)
-    parser.add_argument("--search-epochs", type=int, default=1, help="with weight inheritance, 1 epoch is usually enough for proxy ranking; use 0 for pure inherited-weight evaluation")
+    parser.add_argument("--search-epochs", type=int, default=1, help="with weight inheritance, 1 epoch is usually enough for proxy ranking")
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--lr", type=float, default=0.02)
     parser.add_argument("--momentum", type=float, default=0.9)
@@ -358,7 +348,7 @@ def main() -> None:
     parser.add_argument("--ga-generations", type=int, default=5)
     parser.add_argument("--ga-elites", type=int, default=2)
     parser.add_argument("--ga-crossover-rate", type=float, default=0.8)
-    parser.add_argument("--ga-mutation-rate", type=float, default=0.10)
+    parser.add_argument("--ga-mutation-rate", type=float, default=0.25)
     parser.add_argument("--pso-particles", type=int, default=8)
     parser.add_argument("--pso-iterations", type=int, default=5)
     parser.add_argument("--pso-w", type=float, default=0.6)
@@ -370,17 +360,16 @@ def main() -> None:
     set_seed(args.seed, deterministic=False)
     space = parse_space(args.space)
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
-    run_name = args.run_name or f"block_channel_search_fast_{time.strftime('%Y%m%d_%H%M%S')}"
+    run_name = args.run_name or f"channel_search_fast_{time.strftime('%Y%m%d_%H%M%S')}"
     out_dir = Path(args.save_dir) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "search_config.json").write_text(json.dumps({**vars(args), "search_space": space, "baseline_block_channels": list(BASELINE_CHANNELS), "vector_dim": len(space)}, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out_dir / "search_config.json").write_text(json.dumps({**vars(args), "search_space": space, "baseline_channels": list(BASELINE_CHANNELS)}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     evaluator = FitnessEvaluator(args, space, out_dir, device)
-    print("Baseline block channels:", candidate_to_key(BASELINE_CHANNELS))
+    print("Baseline channels:", candidate_to_key(BASELINE_CHANNELS))
     print(f"Baseline params: {evaluator.baseline_params} ({human_number(evaluator.baseline_params)})")
     print(f"Baseline FLOPs : {evaluator.baseline_flops} ({human_number(evaluator.baseline_flops)})")
     print(f"Baseline-short val acc: {evaluator.baseline_short_acc:.2f}%")
-    print("Search space dimension:", len(space))
     print("Search space:", space)
 
     total_start = time.time(); best_results = {}
@@ -392,7 +381,7 @@ def main() -> None:
     summary = {"best_algorithm": best_algorithm, "best": best, "all_best": best_results, "baseline_short": asdict(evaluator.baseline_short), "baseline": {"channels": list(BASELINE_CHANNELS), "params": evaluator.baseline_params, "flops": evaluator.baseline_flops}, "num_unique_evaluations": len(evaluator.cache), "total_search_time_sec": time.time() - total_start}
     (out_dir / "best_result.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     best_ch = best["channels"]
-    cmd = "python train_block_width_resnet32.py --block-channels {} --run-name final_block_{}_{} --epochs 80 --milestones 40,60 --batch-size 1024 --num-workers 8 --amp --amp-dtype bf16 --channels-last --baseline-ckpt {}".format(
+    cmd = "python train_width_resnet32.py --channels {} --run-name final_{}_{} --epochs 80 --milestones 40,60 --batch-size 1024 --num-workers 8 --amp --amp-dtype bf16 --channels-last --baseline-ckpt {}".format(
         ",".join(map(str, best_ch)), best_algorithm, candidate_to_key(best_ch), args.baseline_ckpt
     )
     (out_dir / "final_train_command.txt").write_text(cmd + "\n", encoding="utf-8")

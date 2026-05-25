@@ -31,7 +31,18 @@ from src.utils.metrics import AverageMeter, accuracy, count_parameters, human_nu
 from src.utils.seed import set_seed
 
 Candidate = Tuple[int, int, int]
-DEFAULT_SPACE = [[12, 16], [20, 24, 28, 32], [40, 48, 56, 64]]
+
+# ========================
+# 搜索空间定义（与第一版主项目保持一致，恢复 aggressive 版本）
+# ========================
+# 每个子列表对应 ResNet32 一个阶段（stage）可选的通道宽度。
+# 三阶段分别对应浅层→中层→深层的特征通道数。
+# 注意：成熟版 block-level 搜索对空间更敏感，包含 8 后完整训练时需重点观察精度下降。
+DEFAULT_SPACE: list[list[int]] = [
+    [8, 12, 16],                   # 第一阶段可选通道宽度
+    [16, 20, 24, 28, 32],          # 第二阶段可选通道宽度
+    [32, 40, 48, 56, 64],          # 第三阶段可选通道宽度
+]
 BASELINE_CHANNELS: Candidate = (16, 32, 64)
 
 

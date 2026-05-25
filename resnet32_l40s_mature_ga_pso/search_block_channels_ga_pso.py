@@ -201,14 +201,9 @@ class FitnessEvaluator:
 
     def _fitness(self, val_acc: float, params_ratio: float, flops_ratio: float) -> tuple[float, float, float]:
         # Constraint is relative to same-budget short baseline, not full 200-epoch baseline.
-        if not hasattr(self, "baseline_short_acc"):
-            # First call is the baseline itself; penalty is computed after we know its acc.
-            below = 0.0
-            penalty = 0.0
-        else:
-            threshold = self.baseline_short_acc - self.args.allowed_short_acc_drop
-            below = max(0.0, threshold - val_acc)
-            penalty = self.args.penalty_mu * below
+        threshold = self.baseline_short_acc - self.args.allowed_short_acc_drop
+        below = max(0.0, threshold - val_acc)
+        penalty = self.args.penalty_mu * below
         fitness = val_acc - 100.0 * (self.args.lambda_params * params_ratio + self.args.lambda_flops * flops_ratio) - penalty
         return fitness, below, penalty
 
@@ -392,8 +387,22 @@ def main() -> None:
     summary = {"best_algorithm": best_algorithm, "best": best, "all_best": best_results, "baseline_short": asdict(evaluator.baseline_short), "baseline": {"channels": list(BASELINE_CHANNELS), "params": evaluator.baseline_params, "flops": evaluator.baseline_flops}, "num_unique_evaluations": len(evaluator.cache), "total_search_time_sec": time.time() - total_start}
     (out_dir / "best_result.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     best_ch = best["channels"]
-    cmd = "python train_block_width_resnet32.py --block-channels {} --run-name final_block_{}_{} --epochs 80 --milestones 40,60 --batch-size 1024 --num-workers 8 --amp --amp-dtype bf16 --channels-last --baseline-ckpt {}".format(
-        ",".join(map(str, best_ch)), best_algorithm, candidate_to_key(best_ch), args.baseline_ckpt
+    cmd = (
+        "python train_block_width_resnet32.py "
+        "--block-channels {} "
+        "--run-name final_block_{}_{}_kd "
+        "--epochs 80 --milestones 40,60 "
+        "--batch-size 1024 --num-workers 8 "
+        "--amp --amp-dtype bf16 --channels-last "
+        "--baseline-ckpt {} "
+        "--teacher-ckpt {} "
+        "--kd-mode logits --kd-alpha 0.7 --kd-temperature 4.0"
+    ).format(
+        ",".join(map(str, best_ch)),
+        best_algorithm,
+        candidate_to_key(best_ch),
+        args.baseline_ckpt,
+        args.baseline_ckpt,
     )
     (out_dir / "final_train_command.txt").write_text(cmd + "\n", encoding="utf-8")
     print("\nSearch done.")
