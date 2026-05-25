@@ -1,0 +1,25 @@
+{
+  "baseline_run": "resnet32_bs128",
+  "compressed_run": "final_l40s_8-20-32",
+  "baseline_channels": [
+    16,
+    32,
+    64
+  ],
+  "compressed_channels": [
+    8,
+    20,
+    32
+  ],
+  "baseline_best_acc": 92.83,
+  "compressed_best_acc": 89.14,
+  "accuracy_drop": 3.6899999999999977,
+  "baseline_params": 464154,
+  "compressed_params": 130066,
+  "params_compression_rate": 0.7197783494271298,
+  "baseline_flops": 68862592,
+  "compressed_flops": 20459840,
+  "flops_reduction_rate": 0.7028889066505077,
+  "baseline_train_time_sec": 2372.641841650009,
+  "compressed_train_time_sec": 801.8252339363098
+}

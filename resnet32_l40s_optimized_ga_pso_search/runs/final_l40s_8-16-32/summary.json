@@ -1,0 +1,19 @@
+{
+  "run_name": "final_l40s_8-16-32",
+  "model": "WidthResNet32",
+  "dataset": "CIFAR-10",
+  "stage_channels": [
+    8,
+    16,
+    32
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 80,
+  "best_acc": 89.18,
+  "best_epoch": 77,
+  "params": 116882,
+  "flops": 17326400,
+  "total_train_time_sec": 770.1344175338745,
+  "checkpoint_best": "runs/final_l40s_8-16-32/best.pt",
+  "checkpoint_last": "runs/final_l40s_8-16-32/last.pt"
+}
