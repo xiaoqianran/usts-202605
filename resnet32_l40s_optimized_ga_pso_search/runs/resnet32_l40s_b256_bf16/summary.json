@@ -1,0 +1,35 @@
+{
+  "run_name": "resnet32_l40s_b256_bf16",
+  "model": "ResNet32",
+  "dataset": "CIFAR-10",
+  "data_backend": "LocalCIFAR10",
+  "stage_channels": [
+    16,
+    32,
+    64
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 200,
+  "batch_size": 256,
+  "lr": 0.1,
+  "milestones": [
+    100,
+    150
+  ],
+  "gamma": 0.1,
+  "momentum": 0.9,
+  "weight_decay": 0.0001,
+  "num_workers": 8,
+  "seed": 42,
+  "amp": true,
+  "amp_dtype": "bf16",
+  "channels_last": true,
+  "compile": false,
+  "best_acc": 92.48,
+  "best_epoch": 148,
+  "params": 464154,
+  "flops": 68862592,
+  "total_train_time_sec": 2449.9713413715363,
+  "checkpoint_best": "runs/resnet32_l40s_b256_bf16/best.pt",
+  "checkpoint_last": "runs/resnet32_l40s_b256_bf16/last.pt"
+}
