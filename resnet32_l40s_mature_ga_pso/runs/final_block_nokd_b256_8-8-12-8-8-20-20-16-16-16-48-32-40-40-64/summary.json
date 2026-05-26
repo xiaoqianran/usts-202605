@@ -1,0 +1,41 @@
+{
+  "run_name": "final_block_nokd_b256_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64",
+  "model": "BlockWidthResNet32",
+  "dataset": "CIFAR-10",
+  "block_channels": [
+    8,
+    8,
+    12,
+    8,
+    8,
+    20,
+    20,
+    16,
+    16,
+    16,
+    48,
+    32,
+    40,
+    40,
+    64
+  ],
+  "stage_channels": [
+    8,
+    20,
+    48
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 80,
+  "best_acc": 88.85,
+  "best_epoch": 68,
+  "params": 201314,
+  "flops": 24846976,
+  "kd_mode": "none",
+  "teacher_ckpt": null,
+  "kd_alpha": 0.7,
+  "kd_temperature": 4.0,
+  "at_weight": 0.0,
+  "total_train_time_sec": 2112.4407708644867,
+  "checkpoint_best": "runs/final_block_nokd_b256_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64/best.pt",
+  "checkpoint_last": "runs/final_block_nokd_b256_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64/last.pt"
+}

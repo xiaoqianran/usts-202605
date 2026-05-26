@@ -1,0 +1,41 @@
+{
+  "run_name": "final_block_kd_b1024_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64",
+  "model": "BlockWidthResNet32",
+  "dataset": "CIFAR-10",
+  "block_channels": [
+    8,
+    8,
+    12,
+    8,
+    8,
+    20,
+    20,
+    16,
+    16,
+    16,
+    48,
+    32,
+    40,
+    40,
+    64
+  ],
+  "stage_channels": [
+    8,
+    20,
+    48
+  ],
+  "blocks_per_stage": 5,
+  "epochs": 80,
+  "best_acc": 89.20999965820313,
+  "best_epoch": 78,
+  "params": 201314,
+  "flops": 24846976,
+  "kd_mode": "logits",
+  "teacher_ckpt": "runs/resnet32_baseline/best.pt",
+  "kd_alpha": 0.7,
+  "kd_temperature": 4.0,
+  "at_weight": 0.0,
+  "total_train_time_sec": 1585.395988225937,
+  "checkpoint_best": "runs/final_block_kd_b1024_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64/best.pt",
+  "checkpoint_last": "runs/final_block_kd_b1024_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64/last.pt"
+}
