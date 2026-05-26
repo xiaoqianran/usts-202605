@@ -1,11 +1,78 @@
 from __future__ import annotations
 
+import os
+import pickle
 import random
+import tarfile
+from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import torch
-import torchvision
-import torchvision.transforms as transforms
+from torch.utils.data import DataLoader, Dataset, Subset, random_split
+
+
+CIFAR10_MEAN = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1)
+CIFAR10_STD = torch.tensor([0.2023, 0.1994, 0.2010]).view(3, 1, 1)
+
+
+class LocalCIFAR10(Dataset):
+    """CIFAR-10 reader for the extracted python version.
+
+    Expected directory:
+        data/cifar-10-batches-py/
+            data_batch_1 ... data_batch_5
+            test_batch
+
+    This matches the mature L40S project and avoids torchvision-version drift.
+    """
+
+    def __init__(self, root: str = "data", train: bool = True, augment: bool = False) -> None:
+        self.root = Path(root)
+        self.train = train
+        self.augment = augment
+        base = self.root / "cifar-10-batches-py"
+        if not base.exists():
+            tgz = self.root / "cifar-10-python.tar.gz"
+            if tgz.exists():
+                with tarfile.open(tgz, "r:gz") as tar:
+                    tar.extractall(self.root)
+            else:
+                raise FileNotFoundError(
+                    f"CIFAR-10 not found at {base}. Put cifar-10-batches-py under {self.root}, "
+                    "or run scripts/prepare_cifar10.sh first."
+                )
+
+        files = [f"data_batch_{i}" for i in range(1, 6)] if train else ["test_batch"]
+        data_list, labels = [], []
+        for name in files:
+            with (base / name).open("rb") as f:
+                entry = pickle.load(f, encoding="latin1")
+            data_list.append(entry["data"])
+            labels.extend(entry.get("labels", entry.get("fine_labels")))
+        data = np.concatenate(data_list, axis=0).reshape(-1, 3, 32, 32)
+        self.data = torch.from_numpy(data).float().div_(255.0)
+        self.targets = torch.tensor(labels, dtype=torch.long)
+
+    def __len__(self) -> int:
+        return int(self.targets.numel())
+
+    def _augment(self, x: torch.Tensor) -> torch.Tensor:
+        x = torch.nn.functional.pad(x.unsqueeze(0), (4, 4, 4, 4), mode="reflect").squeeze(0)
+        top = random.randint(0, 8)
+        left = random.randint(0, 8)
+        x = x[:, top:top + 32, left:left + 32]
+        if random.random() < 0.5:
+            x = torch.flip(x, dims=(2,))
+        return x
+
+    def __getitem__(self, idx: int):
+        x = self.data[idx]
+        if self.train and self.augment:
+            x = self._augment(x)
+        x = (x - CIFAR10_MEAN) / CIFAR10_STD
+        y = self.targets[idx]
+        return x, y
 
 
 def _subset(dataset, max_samples: int | None, seed: int):
@@ -14,62 +81,58 @@ def _subset(dataset, max_samples: int | None, seed: int):
     rng = random.Random(seed)
     indices = list(range(len(dataset)))
     rng.shuffle(indices)
-    return torch.utils.data.Subset(dataset, indices[:max_samples])
+    return Subset(dataset, indices[:max_samples])
+
+
+def _loader(dataset, batch_size: int, shuffle: bool, num_workers: int) -> DataLoader:
+    kwargs = dict(
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    if num_workers > 0:
+        kwargs.update(persistent_workers=True, prefetch_factor=4)
+    return DataLoader(dataset, **kwargs)
 
 
 def get_cifar10_loaders(
     data_dir: str = "data",
-    batch_size: int = 128,
-    num_workers: int = 2,
+    batch_size: int = 1024,
+    num_workers: int = 8,
     max_train_samples: Optional[int] = None,
     max_test_samples: Optional[int] = None,
     seed: int = 42,
 ):
-    mean = (0.4914, 0.4822, 0.4465)
-    std = (0.2023, 0.1994, 0.2010)
-
-    train_transform = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean, std),
-    ])
-    test_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean, std),
-    ])
-
-    train_set = torchvision.datasets.CIFAR10(
-        root=data_dir,
-        train=True,
-        download=True,
-        transform=train_transform,
-    )
-    test_set = torchvision.datasets.CIFAR10(
-        root=data_dir,
-        train=False,
-        download=True,
-        transform=test_transform,
-    )
-
+    train_set = LocalCIFAR10(data_dir, train=True, augment=True)
+    test_set = LocalCIFAR10(data_dir, train=False, augment=False)
     train_set = _subset(train_set, max_train_samples, seed)
     test_set = _subset(test_set, max_test_samples, seed + 10000)
+    return _loader(train_set, batch_size, True, num_workers), _loader(test_set, batch_size, False, num_workers)
 
-    train_loader = torch.utils.data.DataLoader(
-        train_set,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
-    test_loader = torch.utils.data.DataLoader(
-        test_set,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
-    return train_loader, test_loader
+
+def get_cifar10_train_val_loaders(
+    data_dir: str = "data",
+    batch_size: int = 2048,
+    num_workers: int = 8,
+    val_size: int = 5000,
+    max_train_samples: Optional[int] = None,
+    max_val_samples: Optional[int] = None,
+    seed: int = 42,
+):
+    full = LocalCIFAR10(data_dir, train=True, augment=True)
+    val_size = min(max(1, val_size), len(full) - 1)
+    train_size = len(full) - val_size
+    gen = torch.Generator().manual_seed(seed)
+    train_set, val_set_aug = random_split(full, [train_size, val_size], generator=gen)
+
+    val_base = LocalCIFAR10(data_dir, train=True, augment=False)
+    val_indices = val_set_aug.indices if hasattr(val_set_aug, "indices") else list(range(train_size, len(full)))
+    val_set = Subset(val_base, val_indices)
+
+    train_set = _subset(train_set, max_train_samples, seed + 1)
+    val_set = _subset(val_set, max_val_samples, seed + 2)
+    return _loader(train_set, batch_size, True, num_workers), _loader(val_set, batch_size, False, num_workers)
 
 
 def get_cifar10_test_loader(
@@ -79,97 +142,6 @@ def get_cifar10_test_loader(
     max_test_samples: Optional[int] = None,
     seed: int = 42,
 ):
-    mean = (0.4914, 0.4822, 0.4465)
-    std = (0.2023, 0.1994, 0.2010)
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean, std),
-    ])
-    test_set = torchvision.datasets.CIFAR10(
-        root=data_dir,
-        train=False,
-        download=True,
-        transform=transform,
-    )
+    test_set = LocalCIFAR10(data_dir, train=False, augment=False)
     test_set = _subset(test_set, max_test_samples, seed + 10000)
-    return torch.utils.data.DataLoader(
-        test_set,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
-
-
-def get_cifar10_train_val_loaders(
-    data_dir: str = "data",
-    batch_size: int = 128,
-    num_workers: int = 2,
-    val_size: int = 5000,
-    max_train_samples: Optional[int] = None,
-    max_val_samples: Optional[int] = None,
-    seed: int = 42,
-):
-    """Create train/val split loaders from CIFAR-10 *training* set (no test leakage).
-
-    This is used by the GA/PSO search (L40S optimized path) so that the fitness signal
-    during search comes from a validation split, not the official test set.
-    """
-    mean = (0.4914, 0.4822, 0.4465)
-    std = (0.2023, 0.1994, 0.2010)
-
-    train_transform = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean, std),
-    ])
-    val_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean, std),
-    ])
-
-    # Two separate dataset objects so that val uses *no augmentation* transform
-    full_for_train = torchvision.datasets.CIFAR10(
-        root=data_dir,
-        train=True,
-        download=True,
-        transform=train_transform,
-    )
-    full_for_val = torchvision.datasets.CIFAR10(
-        root=data_dir,
-        train=True,
-        download=True,
-        transform=val_transform,
-    )
-
-    # Seeded shuffle + split (val first, then the rest is train pool)
-    rng = random.Random(seed)
-    indices = list(range(len(full_for_train)))
-    rng.shuffle(indices)
-
-    val_indices = indices[:val_size]
-    train_indices = indices[val_size:]
-
-    train_set = torch.utils.data.Subset(full_for_train, train_indices)
-    val_set = torch.utils.data.Subset(full_for_val, val_indices)
-
-    # Further reduction for fast proxy search (applied after the val split)
-    train_set = _subset(train_set, max_train_samples, seed)
-    val_set = _subset(val_set, max_val_samples, seed + 9999)
-
-    train_loader = torch.utils.data.DataLoader(
-        train_set,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
-    val_loader = torch.utils.data.DataLoader(
-        val_set,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
-    return train_loader, val_loader
+    return _loader(test_set, batch_size, False, num_workers)
