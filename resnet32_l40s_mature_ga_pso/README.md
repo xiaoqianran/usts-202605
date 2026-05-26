@@ -315,6 +315,359 @@ python train_block_width_resnet32.py \
 - 训练时长: 243s
 - KD: logits, α=0.7, T=4.0
 
+### 7.2 需要补充的 1024 batch 无 KD 对照（三步）
+
+目前第 7.1 节只记录了三个配置在 **batch size 1024 + KD** 下的训练结果。为了证明 KD 的实际收益，还需要对同样三个 block-channel 配置各跑一次 **batch size 1024、无 KD** 训练，保持 epochs、milestones、batch size、BF16、channels-last 等设置不变，只去掉 `--teacher-ckpt` 和所有 `--kd-*` 参数。
+
+以下三步是应补充的无 KD 对照实验命令：
+
+```bash
+# 步骤 1: Config1 无 KD，batch 1024
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,16,16,16,20,16,48,40,32,32,64 \
+  --run-name final_block_nokd_b1024_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 1024 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 2: Config2 无 KD，batch 1024
+python train_block_width_resnet32.py \
+  --block-channels 8,8,12,8,8,20,20,16,16,16,48,32,40,40,64 \
+  --run-name final_block_nokd_b1024_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 1024 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 3: Config3 无 KD，batch 1024
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,20,20,16,16,16,48,40,32,40,64 \
+  --run-name final_block_nokd_b1024_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 1024 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+无 KD 对照完成后，建议再用 `compare_results.py` 对三个 no-KD `summary.json` 分别生成 comparison JSON，并在第 8 节中新增一张 “KD vs No-KD” 表，至少包含 `Best Acc`、`Acc Drop`、`Params`、`FLOPs`、`训练时长` 和 `KD Gain`。
+
+### 7.3 需要补充的 128 batch 对照实验（KD 三步 + 无 KD 三步）
+
+为了进一步判断 batch size 对最终压缩模型精度的影响，建议对同样三个 block-channel 配置补充 **batch size 128** 的训练。这里设计两组实验：
+
+- **128 batch + KD**：与第 7.1 节相同 KD 设置，只把 `--batch-size` 从 1024 改为 128。
+- **128 batch + 无 KD**：与 128 batch KD 设置保持一致，但去掉 `--teacher-ckpt` 和所有 `--kd-*` 参数。
+
+#### 7.3.1 128 batch + KD（三步）
+
+```bash
+# 步骤 1: Config1，batch 128 + KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,16,16,16,20,16,48,40,32,32,64 \
+  --run-name final_block_kd_b128_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 128 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 2: Config2，batch 128 + KD
+python train_block_width_resnet32.py \
+  --block-channels 8,8,12,8,8,20,20,16,16,16,48,32,40,40,64 \
+  --run-name final_block_kd_b128_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 128 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 3: Config3，batch 128 + KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,20,20,16,16,16,48,40,32,40,64 \
+  --run-name final_block_kd_b128_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 128 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+#### 7.3.2 128 batch + 无 KD（三步）
+
+```bash
+# 步骤 1: Config1，batch 128，无 KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,16,16,16,20,16,48,40,32,32,64 \
+  --run-name final_block_nokd_b128_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 128 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 2: Config2，batch 128，无 KD
+python train_block_width_resnet32.py \
+  --block-channels 8,8,12,8,8,20,20,16,16,16,48,32,40,40,64 \
+  --run-name final_block_nokd_b128_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 128 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 3: Config3，batch 128，无 KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,20,20,16,16,16,48,40,32,40,64 \
+  --run-name final_block_nokd_b128_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 128 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+### 7.4 需要补充的 256 batch 对照实验（KD 三步 + 无 KD 三步）
+
+#### 7.4.1 256 batch + KD（三步）
+
+```bash
+# 步骤 1: Config1，batch 256 + KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,16,16,16,20,16,48,40,32,32,64 \
+  --run-name final_block_kd_b256_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 256 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 2: Config2，batch 256 + KD
+python train_block_width_resnet32.py \
+  --block-channels 8,8,12,8,8,20,20,16,16,16,48,32,40,40,64 \
+  --run-name final_block_kd_b256_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 256 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 3: Config3，batch 256 + KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,20,20,16,16,16,48,40,32,40,64 \
+  --run-name final_block_kd_b256_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 256 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+#### 7.4.2 256 batch + 无 KD（三步）
+
+```bash
+# 步骤 1: Config1，batch 256，无 KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,16,16,16,20,16,48,40,32,32,64 \
+  --run-name final_block_nokd_b256_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 256 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 2: Config2，batch 256，无 KD
+python train_block_width_resnet32.py \
+  --block-channels 8,8,12,8,8,20,20,16,16,16,48,32,40,40,64 \
+  --run-name final_block_nokd_b256_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 256 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 3: Config3，batch 256，无 KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,20,20,16,16,16,48,40,32,40,64 \
+  --run-name final_block_nokd_b256_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 256 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+### 7.5 需要补充的 512 batch 对照实验（KD 三步 + 无 KD 三步）
+
+#### 7.5.1 512 batch + KD（三步）
+
+```bash
+# 步骤 1: Config1，batch 512 + KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,16,16,16,20,16,48,40,32,32,64 \
+  --run-name final_block_kd_b512_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 512 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 2: Config2，batch 512 + KD
+python train_block_width_resnet32.py \
+  --block-channels 8,8,12,8,8,20,20,16,16,16,48,32,40,40,64 \
+  --run-name final_block_kd_b512_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 512 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 3: Config3，batch 512 + KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,20,20,16,16,16,48,40,32,40,64 \
+  --run-name final_block_kd_b512_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 512 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --teacher-ckpt runs/resnet32_baseline/best.pt \
+  --kd-mode logits \
+  --kd-alpha 0.7 \
+  --kd-temperature 4.0 \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+#### 7.5.2 512 batch + 无 KD（三步）
+
+```bash
+# 步骤 1: Config1，batch 512，无 KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,16,16,16,20,16,48,40,32,32,64 \
+  --run-name final_block_nokd_b512_12-8-8-8-8-16-16-16-20-16-48-40-32-32-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 512 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 2: Config2，batch 512，无 KD
+python train_block_width_resnet32.py \
+  --block-channels 8,8,12,8,8,20,20,16,16,16,48,32,40,40,64 \
+  --run-name final_block_nokd_b512_8-8-12-8-8-20-20-16-16-16-48-32-40-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 512 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+```bash
+# 步骤 3: Config3，batch 512，无 KD
+python train_block_width_resnet32.py \
+  --block-channels 12,8,8,8,8,20,20,16,16,16,48,40,32,40,64 \
+  --run-name final_block_nokd_b512_12-8-8-8-8-20-20-16-16-16-48-40-32-40-64 \
+  --epochs 80 \
+  --milestones 40,60 \
+  --batch-size 512 \
+  --num-workers 8 \
+  --baseline-ckpt runs/resnet32_baseline/best.pt \
+  --amp --amp-dtype bf16 --channels-last
+```
+
+完成后建议把第 7.1、7.2、7.3、7.4、7.5 的结果合并成一张 batch size × KD 消融表：
+
+| Batch Size | KD | Config1 Acc | Config2 Acc | Config3 Acc | 备注 |
+|------------|----|-------------|-------------|-------------|------|
+| 128 | 有 | 待补充 | 待补充 | 待补充 | 第 7.3.1 节 |
+| 128 | 无 | 待补充 | 待补充 | 待补充 | 第 7.3.2 节 |
+| 256 | 有 | 待补充 | 待补充 | 待补充 | 第 7.4.1 节 |
+| 256 | 无 | 待补充 | 待补充 | 待补充 | 第 7.4.2 节 |
+| 512 | 有 | 待补充 | 待补充 | 待补充 | 第 7.5.1 节 |
+| 512 | 无 | 待补充 | 待补充 | 待补充 | 第 7.5.2 节 |
+| 1024 | 有 | 已完成 | 已完成 | 已完成 | 第 7.1 节 |
+| 1024 | 无 | 待补充 | 待补充 | 待补充 | 第 7.2 节 |
+
 ## 8. 结果对比
 
 ### 通用命令模板

@@ -208,6 +208,123 @@ python train_block_resnet32_kd.py \
   --amp
 ```
 
+### 7.1 需要补充的完整 batch size × KD 对照实验
+
+目前第 2 节只记录了若干 **batch 128 + KD** 的最终结果，没有系统完成 `128 / 256 / 512 / 1024` 四种 batch size 下 **有 KD / 无 KD** 的对照。为了公平比较 KD 和 batch size 对压缩模型的影响，建议对第 2 节中的三个代表配置都补齐这组消融：
+
+- Config1（GA 最优，最高压缩）：`16,16,12,12,8,16,20,20,20,20,40,40,32,32,32`
+- Config2（PSO 方向，平衡配置）：`12,12,8,8,8,24,20,20,16,16,48,48,32,40,64`
+- Config3（手册示例，温和配置）：`16,16,12,12,16,32,28,24,24,28,64,56,48,48,56`
+
+执行原则：
+- `epochs=80`、`milestones=40,60`、`amp` 保持不变。
+- KD 版本传入 `--teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4`。
+- 无 KD 版本不传 `--teacher-checkpoint`，也不传 `--kd-*` 参数。
+- run name 使用 `final_block_{kd,nokd}_b{batch}_{配置名}`，避免覆盖已有结果。
+
+#### 7.1.1 Batch 128：KD 三组 + 无 KD 三组
+
+```bash
+# Config1: batch 128 + KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,8,16,20,20,20,20,40,40,32,32,32 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b128_ga_best --epochs 80 --batch-size 128 --milestones 40,60 --amp
+
+# Config1: batch 128，无 KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,8,16,20,20,20,20,40,40,32,32,32 --run-name final_block_nokd_b128_ga_best --epochs 80 --batch-size 128 --milestones 40,60 --amp
+
+# Config2: batch 128 + KD
+python train_block_resnet32_kd.py --block-channels 12,12,8,8,8,24,20,20,16,16,48,48,32,40,64 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b128_pso_candidate --epochs 80 --batch-size 128 --milestones 40,60 --amp
+
+# Config2: batch 128，无 KD
+python train_block_resnet32_kd.py --block-channels 12,12,8,8,8,24,20,20,16,16,48,48,32,40,64 --run-name final_block_nokd_b128_pso_candidate --epochs 80 --batch-size 128 --milestones 40,60 --amp
+
+# Config3: batch 128 + KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,16,32,28,24,24,28,64,56,48,48,56 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b128_manual_mild --epochs 80 --batch-size 128 --milestones 40,60 --amp
+
+# Config3: batch 128，无 KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,16,32,28,24,24,28,64,56,48,48,56 --run-name final_block_nokd_b128_manual_mild --epochs 80 --batch-size 128 --milestones 40,60 --amp
+```
+
+#### 7.1.2 Batch 256：KD 三组 + 无 KD 三组
+
+```bash
+# Config1: batch 256 + KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,8,16,20,20,20,20,40,40,32,32,32 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b256_ga_best --epochs 80 --batch-size 256 --milestones 40,60 --amp
+
+# Config1: batch 256，无 KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,8,16,20,20,20,20,40,40,32,32,32 --run-name final_block_nokd_b256_ga_best --epochs 80 --batch-size 256 --milestones 40,60 --amp
+
+# Config2: batch 256 + KD
+python train_block_resnet32_kd.py --block-channels 12,12,8,8,8,24,20,20,16,16,48,48,32,40,64 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b256_pso_candidate --epochs 80 --batch-size 256 --milestones 40,60 --amp
+
+# Config2: batch 256，无 KD
+python train_block_resnet32_kd.py --block-channels 12,12,8,8,8,24,20,20,16,16,48,48,32,40,64 --run-name final_block_nokd_b256_pso_candidate --epochs 80 --batch-size 256 --milestones 40,60 --amp
+
+# Config3: batch 256 + KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,16,32,28,24,24,28,64,56,48,48,56 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b256_manual_mild --epochs 80 --batch-size 256 --milestones 40,60 --amp
+
+# Config3: batch 256，无 KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,16,32,28,24,24,28,64,56,48,48,56 --run-name final_block_nokd_b256_manual_mild --epochs 80 --batch-size 256 --milestones 40,60 --amp
+```
+
+#### 7.1.3 Batch 512：KD 三组 + 无 KD 三组
+
+```bash
+# Config1: batch 512 + KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,8,16,20,20,20,20,40,40,32,32,32 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b512_ga_best --epochs 80 --batch-size 512 --milestones 40,60 --amp
+
+# Config1: batch 512，无 KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,8,16,20,20,20,20,40,40,32,32,32 --run-name final_block_nokd_b512_ga_best --epochs 80 --batch-size 512 --milestones 40,60 --amp
+
+# Config2: batch 512 + KD
+python train_block_resnet32_kd.py --block-channels 12,12,8,8,8,24,20,20,16,16,48,48,32,40,64 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b512_pso_candidate --epochs 80 --batch-size 512 --milestones 40,60 --amp
+
+# Config2: batch 512，无 KD
+python train_block_resnet32_kd.py --block-channels 12,12,8,8,8,24,20,20,16,16,48,48,32,40,64 --run-name final_block_nokd_b512_pso_candidate --epochs 80 --batch-size 512 --milestones 40,60 --amp
+
+# Config3: batch 512 + KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,16,32,28,24,24,28,64,56,48,48,56 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b512_manual_mild --epochs 80 --batch-size 512 --milestones 40,60 --amp
+
+# Config3: batch 512，无 KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,16,32,28,24,24,28,64,56,48,48,56 --run-name final_block_nokd_b512_manual_mild --epochs 80 --batch-size 512 --milestones 40,60 --amp
+```
+
+#### 7.1.4 Batch 1024：KD 三组 + 无 KD 三组
+
+```bash
+# Config1: batch 1024 + KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,8,16,20,20,20,20,40,40,32,32,32 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b1024_ga_best --epochs 80 --batch-size 1024 --milestones 40,60 --amp
+
+# Config1: batch 1024，无 KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,8,16,20,20,20,20,40,40,32,32,32 --run-name final_block_nokd_b1024_ga_best --epochs 80 --batch-size 1024 --milestones 40,60 --amp
+
+# Config2: batch 1024 + KD
+python train_block_resnet32_kd.py --block-channels 12,12,8,8,8,24,20,20,16,16,48,48,32,40,64 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b1024_pso_candidate --epochs 80 --batch-size 1024 --milestones 40,60 --amp
+
+# Config2: batch 1024，无 KD
+python train_block_resnet32_kd.py --block-channels 12,12,8,8,8,24,20,20,16,16,48,48,32,40,64 --run-name final_block_nokd_b1024_pso_candidate --epochs 80 --batch-size 1024 --milestones 40,60 --amp
+
+# Config3: batch 1024 + KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,16,32,28,24,24,28,64,56,48,48,56 --teacher-checkpoint runs/resnet32_baseline/best.pt --kd-alpha 0.5 --kd-temperature 4 --run-name final_block_kd_b1024_manual_mild --epochs 80 --batch-size 1024 --milestones 40,60 --amp
+
+# Config3: batch 1024，无 KD
+python train_block_resnet32_kd.py --block-channels 16,16,12,12,16,32,28,24,24,28,64,56,48,48,56 --run-name final_block_nokd_b1024_manual_mild --epochs 80 --batch-size 1024 --milestones 40,60 --amp
+```
+
+#### 7.1.5 结果汇总表模板
+
+完成后建议把 24 个 `summary.json` 合并成下面这张消融表，用来同时回答 “小 batch 是否更好” 和 “KD 是否带来稳定收益”：
+
+| Batch Size | KD | Config1 GA Best | Config2 PSO Candidate | Config3 Manual Mild | 备注 |
+|------------|----|-----------------|-----------------------|---------------------|------|
+| 128 | 有 | 待补充 | 待补充 | 待补充 | `final_block_kd_b128_*` |
+| 128 | 无 | 待补充 | 待补充 | 待补充 | `final_block_nokd_b128_*` |
+| 256 | 有 | 待补充 | 待补充 | 待补充 | `final_block_kd_b256_*` |
+| 256 | 无 | 待补充 | 待补充 | 待补充 | `final_block_nokd_b256_*` |
+| 512 | 有 | 待补充 | 待补充 | 待补充 | `final_block_kd_b512_*` |
+| 512 | 无 | 待补充 | 待补充 | 待补充 | `final_block_nokd_b512_*` |
+| 1024 | 有 | 待补充 | 待补充 | 待补充 | `final_block_kd_b1024_*` |
+| 1024 | 无 | 待补充 | 待补充 | 待补充 | `final_block_nokd_b1024_*` |
+
 ---
 
 ## 8. 结果对比
