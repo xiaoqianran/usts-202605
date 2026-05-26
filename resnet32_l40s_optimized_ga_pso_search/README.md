@@ -189,15 +189,26 @@ python train_width_resnet32.py \
 
 ### 3.5 生成对比 JSON（训练完成后）
 
-旧压缩结果的历史对比仍使用 `runs/resnet32_bs128/summary.json`。新一轮压缩模型完成后，应改用 `runs/resnet32_baseline/summary.json` 作为 baseline：
+第 3.4 节三个配置都训练完成后，需要分别生成三个对比 JSON。旧压缩结果的历史对比仍使用 `runs/resnet32_bs128/summary.json`。新一轮压缩模型完成后，应改用 `runs/resnet32_baseline/summary.json` 作为 baseline：
 
 ```bash
+# 1. 最激进配置 8-16-32
 python compare_results.py \
   --baseline runs/resnet32_bs128/summary.json \
   --compressed runs/final_l40s_8-16-32/summary.json \
   --output runs/final_l40s_comparison_8-16-32.json
 
-# 同理可生成 8-20-32 和 12-24-32 的对比文件
+# 2. 平衡配置 8-20-32
+python compare_results.py \
+  --baseline runs/resnet32_bs128/summary.json \
+  --compressed runs/final_l40s_8-20-32/summary.json \
+  --output runs/final_l40s_comparison_8-20-32.json
+
+# 3. 推荐配置 12-24-32（精度损失最小）
+python compare_results.py \
+  --baseline runs/resnet32_bs128/summary.json \
+  --compressed runs/final_l40s_12-24-32/summary.json \
+  --output runs/final_l40s_comparison_12-24-32.json
 ```
 
 实际结果和已生成的 JSON 见 [2. L40S 实验结果](#2-l40s-实验结果已完成)。
