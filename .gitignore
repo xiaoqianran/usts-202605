@@ -149,6 +149,10 @@ cython_debug/
 ehthumbs.db
 Thumbs.db
 
+# Node.js / frontend tooling (unified_report uses export_report.js)
+node_modules/
+# Keep package-lock.json for reproducibility of the report tool (small file)
+
 # ML / Deep Learning artifacts
 # Most model weights are ignored, BUT for the completed experiments we
 # explicitly keep the best.pt / last.pt inside runs/ (see negation rules below)

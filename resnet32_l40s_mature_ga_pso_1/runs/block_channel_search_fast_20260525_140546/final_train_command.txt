@@ -1,1 +1,0 @@
-python train_block_width_resnet32.py --block-channels 16,16,16,16,16,32,28,28,20,20,56,56,56,48,56 --run-name final_block_pso_16-16-16-16-16-32-28-28-20-20-56-56-56-48-56 --epochs 80 --milestones 40,60 --batch-size 1024 --num-workers 8 --amp --amp-dtype bf16 --channels-last --baseline-ckpt runs/resnet32_baseline/best.pt
