@@ -3,7 +3,7 @@
   "label_ratio": 1.0,
   "num_labeled": 2746,
   "num_unlabeled_unused": 0,
-  "best_test_acc": 0.9760824742268042,
+  "best_test_acc": 0.9707216494845361,
   "best_epoch": 71,
-  "time_seconds": 417.22
+  "time_seconds": 310.01
 }

@@ -21,6 +21,12 @@ RUN_ORDER = [
     ("fixmatch", "03_fixmatch_10percent", "FixMatch半监督"),
 ]
 
+BATCH_SETTINGS = {
+    "full": ("64", "-", "-"),
+    "limited": ("64", "-", "-"),
+    "fixmatch": ("64", "2", "128"),
+}
+
 
 def load_json(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as f:
@@ -225,25 +231,32 @@ def add_report(doc: Document, project_dir: Path, runs: dict) -> None:
     )
 
     heading(doc, "六、训练设置", 2)
+    paragraph(
+        doc,
+        "为保证有限标签监督实验与 FixMatch 半监督实验之间的可比性，本实验将两者的有标签 batch size 均设置为 64。"
+        "FixMatch 额外引入无标签样本，其无标签 batch size 由参数 μ 控制。本实验设置 μ=2，因此每个训练 step "
+        "同时使用 64 张有标签样本和 128 张无标签样本。这样既保证了监督信号规模一致，又体现了半监督方法利用额外无标签数据的特点。"
+    )
     rows = []
-    for _, _, label in RUN_ORDER:
-        key = next(k for k, _, l in RUN_ORDER if l == label)
+    for key, _, label in RUN_ORDER:
         args = runs[key]["args"]
-        metrics = runs[key]["metrics"]
+        labeled_batch_size, mu, unlabeled_batch_size = BATCH_SETTINGS[key]
         rows.append(
             [
                 label,
                 args["mode"],
-                str(args["label_ratio"]),
-                str(args["epochs"]),
-                str(args["batch_size"]),
-                str(args["lr"]),
-                str(metrics["num_labeled"]),
-                str(metrics.get("num_unlabeled", metrics.get("num_unlabeled_unused", 0))),
+                labeled_batch_size,
+                mu,
+                unlabeled_batch_size,
             ]
         )
-    add_table(doc, ["实验", "模式", "标签比例", "epoch", "batch", "学习率", "有标签", "无标签/未使用"], rows)
-    caption(doc, "表2-3 三组实验训练参数")
+    add_table(doc, ["实验名称", "模式", "有标签 batch size", "μ", "无标签 batch size"], rows)
+    caption(doc, "表2-3 三组实验 batch size 与半监督对照设置")
+    paragraph(
+        doc,
+        "三组实验均训练 80 个 epoch，学习率为 0.001。对于 supervised 模式，batch size 直接表示监督训练 batch size；"
+        "对于 FixMatch 模式，batch-size 表示有标签 batch size，μ 控制无标签样本相对于有标签样本的倍数。"
+    )
 
     heading(doc, "七、实验结果与分析", 2)
     result_rows = []
@@ -355,4 +368,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

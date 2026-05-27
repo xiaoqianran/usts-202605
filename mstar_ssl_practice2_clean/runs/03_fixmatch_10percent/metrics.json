@@ -5,7 +5,7 @@
   "num_unlabeled": 2478,
   "threshold": 0.95,
   "lambda_u": 1.0,
-  "best_test_acc": 0.8746391752577319,
-  "best_epoch": 34,
-  "time_seconds": 232.54
+  "best_test_acc": 0.825979381443299,
+  "best_epoch": 68,
+  "time_seconds": 376.4
 }

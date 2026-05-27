@@ -25,11 +25,10 @@ python train.py \
   --data-root "$DATA_ROOT" \
   --label-ratio 0.1 \
   --epochs "$EPOCHS" \
-  --batch-size 32 \
-  --mu 4 \
+  --batch-size 64 \
+  --mu 2 \
   --threshold 0.95 \
   --lambda-u 1.0 \
   --out runs/03_fixmatch_10percent
 
 python tools/make_presentation_assets.py --runs runs --out presentation_assets
-
