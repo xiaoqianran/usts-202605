@@ -14,6 +14,23 @@ def write_presentation_summary(
     case_mean: pd.DataFrame,
     top_features: pd.DataFrame,
 ) -> Path:
+    """生成答辩用的中文 Markdown 摘要报告（presentation_summary.md）。
+
+    内容涵盖：数据预处理说明、三种划分协议、特征选择结果、模型设计、核心指标对比、
+    PPT 插图清单以及答辩时可强调的痛点与解决方案。
+
+    Args:
+        output_dir: 输出目录（会自动创建）。
+        data_desc: describe_dataset 返回的统计表。
+        cleaning: 每个电池的原始/保留 cycle 计数。
+        split_summary: summarize_splits 返回的划分详情。
+        metrics: 所有场景的详细指标。
+        case_mean: aggregate_case_metrics 聚合后的均值/方差。
+        top_features: 代表场景的 Top-K 特征 + reason 表。
+
+    Returns:
+        生成的 Markdown 文件完整路径。
+    """
     path = output_dir / "presentation_summary.md"
     best = metrics.sort_values("MAE").iloc[0]
     hardest = metrics.sort_values("MAE", ascending=False).iloc[0]
@@ -82,6 +99,7 @@ def write_presentation_summary(
 
 
 def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
+    """将 DataFrame 指定列转换为 GitHub 风格的 Markdown 表格字符串（数值保留 4 位小数）。"""
     sub = df[columns].copy()
     for col in sub.columns:
         if col != "case":
