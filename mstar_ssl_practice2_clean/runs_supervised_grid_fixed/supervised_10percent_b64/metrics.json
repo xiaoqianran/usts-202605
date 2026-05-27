@@ -1,0 +1,9 @@
+{
+  "method": "supervised",
+  "label_ratio": 0.1,
+  "num_labeled": 268,
+  "num_unlabeled_unused": 2478,
+  "best_test_acc": 0.7826804123711341,
+  "best_epoch": 29,
+  "time_seconds": 140.13
+}
