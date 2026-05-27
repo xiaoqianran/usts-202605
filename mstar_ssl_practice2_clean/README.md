@@ -29,8 +29,17 @@ mstar_ssl_practice2_clean/
     inspect_dataset.py             # 数据集统计
     extract_mstar.py               # 解压 MSTAR.zip
     make_presentation_assets.py    # 生成答辩图表和摘要
-  scripts/run_all.sh               # 一键跑三组实验并生成答辩素材
+    summarize_fixmatch_grid.py     # 汇总 FixMatch batch/mu 网格结果
+    summarize_supervised_grid.py   # 汇总监督学习 batch/lr 网格结果
+  scripts/
+    run_all.sh                     # 一键跑基础三组
+    run_fixmatch_grid.sh           # 跑 FixMatch 8组网格 (fixed/scaled)
+    run_supervised_grid.sh         # 跑监督学习 8组网格 (full + 10% x 32/64/96/128)
+    monitor_training.sh            # 实时监控 GPU + 各 run 进度 + OOM 检测
+    babysit_supervised_grids.sh    # 顺序跑完监督 fixed + scaled 两套网格
   docs/答辩展示提纲.md
+  docs/实验结果汇总.md             # 已完成基础对照和四套网格实验结果
+  docs/监控提示词.md               # 给其他 agent 的看管 prompt（本文件）
 ```
 
 ## 环境安装
@@ -92,7 +101,7 @@ python train.py --mode supervised --data-root data/MSTAR --label-ratio 0.1 --epo
 python train.py --mode fixmatch --data-root data/MSTAR --label-ratio 0.1 --epochs 80 --batch-size 64 --mu 2 --out runs/03_fixmatch_10percent
 ```
 
-为保证有限标签监督实验与 FixMatch 半监督实验之间的可比性，本实验将两者的有标签 batch size 均设置为 64。FixMatch 额外引入无标签样本，其无标签 batch size 由参数 μ 控制。本实验设置 μ=2，因此每个训练 step 同时使用 64 张有标签样本和 128 张无标签样本。这样既保证了监督信号规模一致，又体现了半监督方法利用额外无标签数据的特点。
+为保证有限标签监督实验与 FixMatch 半监督实验之间的可比性，本实验将两者的有标签 batch size 均设置为 64。FixMatch 额外引入无标签样本，其无标签 batch size 由参数 μ 控制。基础组设置 μ=2，因此每个训练 step 同时使用 64 张有标签样本和 128 张无标签样本。这样既保证了监督信号规模一致，又体现了半监督方法利用额外无标签数据的特点。
 
 | 实验名称 | 模式 | 有标签 batch size | μ | 无标签 batch size |
 | --- | --- | ---: | ---: | ---: |
@@ -100,41 +109,196 @@ python train.py --mode fixmatch --data-root data/MSTAR --label-ratio 0.1 --epoch
 | 10%标签监督 | supervised | 64 | - | - |
 | FixMatch半监督 | fixmatch | 64 | 2 | 128 |
 
-### batch32 补充实验
+### FixMatch batch/mu 网格补充实验
 
-为进一步排除 batch size 对结果解释的影响，项目追加一组全部使用有标签 batch size 32 的补充实验。该组实验不覆盖默认 `runs/`，而是输出到 `runs_batch32/`：
+为了让半监督实验更严谨，除基础三组对照外，追加 FixMatch 的二维网格实验。网格因素如下：
 
-```bash
-bash scripts/run_all_batch32.sh data/MSTAR
-```
+- 有标签 batch size：32、64、96、128。
+- μ：2、4。
+- 标签划分：固定 `--label-ratio 0.1 --seed 42`，确保所有实验使用同一批有标签样本和同一批无标签样本。
+- 训练轮数、模型、阈值和无标签损失权重：统一为 `80` epoch、`SmallResNet`、`threshold=0.95`、`lambda_u=1.0`。
 
-batch32 组的学习率按线性缩放规则从默认 batch64 的 `0.001` 调整为 `0.0005`。三组实验使用相同学习率，保证主要变量仍然是标签数量和是否使用无标签数据。
+这样一共得到 `4 × 2 = 8` 组 FixMatch 实验，专门分析 batch size 和无标签样本比例 μ 对半监督效果的影响。
 
-| 实验名称 | 模式 | 有标签 batch size | μ | 无标签 batch size | 学习率 |
-| --- | --- | ---: | ---: | ---: | ---: |
-| 全标签监督 | supervised | 32 | - | - | 0.0005 |
-| 10%标签监督 | supervised | 32 | - | - | 0.0005 |
-| FixMatch半监督 | fixmatch | 32 | 4 | 128 | 0.0005 |
-
-FixMatch 中 `batch-size` 仍表示有标签 batch size，`μ=4` 表示每个 step 额外使用 `32×4=128` 张无标签样本。该设置保证三组实验的监督信号 batch size 都是 32，同时保留半监督方法额外利用无标签样本的特点。
-
-### batch96 补充实验
-
-项目还追加一组全部使用有标签 batch size 96 的补充实验，输出到 `runs_batch96/`：
+#### 主对照：固定学习率
 
 ```bash
-bash scripts/run_all_batch96.sh data/MSTAR
+LR_POLICY=fixed PARALLEL_JOBS=4 bash scripts/run_fixmatch_grid.sh data/MSTAR
 ```
 
-batch96 组的学习率同样按线性缩放规则从 batch64 的 `0.001` 调整为 `0.0015`。三组实验使用相同学习率，保证组内对照公平。
+固定学习率组全部使用 `lr=0.001`，这是最严格的主对照：学习率不变，只改变 batch size 和 μ，便于判断性能差异是否来自 batch 或无标签比例本身。输出目录为 `runs_fixmatch_grid_fixed/`。
 
-| 实验名称 | 模式 | 有标签 batch size | μ | 无标签 batch size | 学习率 |
-| --- | --- | ---: | ---: | ---: | ---: |
-| 全标签监督 | supervised | 96 | - | - | 0.0015 |
-| 10%标签监督 | supervised | 96 | - | - | 0.0015 |
-| FixMatch半监督 | fixmatch | 96 | 2 | 192 | 0.0015 |
+| 编号 | 有标签 batch size | μ | 无标签 batch size | 学习率 | 输出目录 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| F1 | 32 | 2 | 64 | 0.001 | `runs_fixmatch_grid_fixed/fixmatch_b32_mu2` |
+| F2 | 32 | 4 | 128 | 0.001 | `runs_fixmatch_grid_fixed/fixmatch_b32_mu4` |
+| F3 | 64 | 2 | 128 | 0.001 | `runs_fixmatch_grid_fixed/fixmatch_b64_mu2` |
+| F4 | 64 | 4 | 256 | 0.001 | `runs_fixmatch_grid_fixed/fixmatch_b64_mu4` |
+| F5 | 96 | 2 | 192 | 0.001 | `runs_fixmatch_grid_fixed/fixmatch_b96_mu2` |
+| F6 | 96 | 4 | 384 | 0.001 | `runs_fixmatch_grid_fixed/fixmatch_b96_mu4` |
+| F7 | 128 | 2 | 256 | 0.001 | `runs_fixmatch_grid_fixed/fixmatch_b128_mu2` |
+| F8 | 128 | 4 | 512 | 0.001 | `runs_fixmatch_grid_fixed/fixmatch_b128_mu4` |
 
-FixMatch 中 `batch-size` 表示有标签 batch size，`μ=2` 表示每个 step 额外使用 `96×2=192` 张无标签样本。该组用于观察更大有标签 batch size 和线性缩放学习率下，有限标签监督与半监督方法的表现是否稳定。
+#### 学习率敏感性分析：线性缩放学习率
+
+固定学习率可以隔离变量，但大 batch 往往需要更大的学习率才能保持相近的参数更新尺度。因此再追加一组线性缩放学习率实验，作为敏感性分析：
+
+```bash
+LR_POLICY=scaled PARALLEL_JOBS=4 bash scripts/run_fixmatch_grid.sh data/MSTAR
+```
+
+线性缩放规则以 batch64 的 `lr=0.001` 为基准：
+
+| 有标签 batch size | 学习率 |
+| ---: | ---: |
+| 32 | 0.0005 |
+| 64 | 0.001 |
+| 96 | 0.0015 |
+| 128 | 0.002 |
+
+该组输出目录为 `runs_fixmatch_grid_scaled/`。如果固定学习率和线性缩放学习率得出的最优 batch/μ 一致，说明结论更稳定；如果不一致，则报告中应明确说明 batch size 与学习率存在耦合，不能只用单一学习率结论解释半监督效果。
+
+#### 推荐执行顺序
+
+1. 先跑基础三组对照，得到全标签上限、10% 标签监督下限和 FixMatch 基础结果。
+2. 再跑固定学习率 8 组网格，把它作为正式报告的主要 batch/mu 消融实验。
+3. 最后跑线性缩放学习率 8 组网格，作为学习率敏感性分析。如果时间或算力有限，至少完成固定学习率 8 组。
+
+`PARALLEL_JOBS` 控制同时训练的实验数量。H100 80GB 上不建议直接设置为 8，因为 `batch=96, μ=4` 和 `batch=128, μ=4` 与其他实验同时运行时容易把显存占满；推荐先用 `PARALLEL_JOBS=4` 跑完整实验。
+
+网格实验完成后会自动生成汇总：
+
+```text
+runs_fixmatch_grid_fixed/summary/fixmatch_grid_summary.csv
+runs_fixmatch_grid_fixed/summary/fixmatch_grid_summary.md
+runs_fixmatch_grid_scaled/summary/fixmatch_grid_summary.csv
+runs_fixmatch_grid_scaled/summary/fixmatch_grid_summary.md
+```
+
+也可以手动汇总任意网格目录：
+
+```bash
+python tools/summarize_fixmatch_grid.py --runs runs_fixmatch_grid_fixed --out runs_fixmatch_grid_fixed/summary
+```
+
+## Supervised batch/lr 网格对标实验
+
+为了与 FixMatch 网格形成严谨对照，补充了**纯监督学习**在相同 batch size 下的表现：
+
+- 全标签监督（label_ratio=1.0）：全部 2746 个训练样本有标签，作为性能上限参考。
+- 10% 标签监督（label_ratio=0.1）：仅保留 ~268 个有标签样本，其余 2478 张作为“无标签但实际未使用”（模拟有限标签场景的下限）。
+
+网格因素与 FixMatch 完全对齐：
+- batch size：32 / 64 / 96 / 128
+- 学习率策略：**fixed** (全部 0.001) 和 **scaled** (按 batch 线性缩放：32→0.0005, 64→0.001, 96→0.0015, 128→0.002)
+- 统一 80 epoch、SmallResNet、seed=42
+
+共 2 策略 × 4 batch × 2 标签比例 = **16 组** 监督实验。
+
+运行命令（推荐用 babysit 脚本，它会按顺序跑 fixed 再 scaled，并自动跳过已完成的）：
+
+```bash
+# 方式一：一键顺序跑两套（推荐，带监控）
+bash scripts/babysit_supervised_grids.sh data/MSTAR
+
+# 方式二：手动分开跑（支持断点续跑）
+LR_POLICY=fixed  PARALLEL_JOBS=4 bash scripts/run_supervised_grid.sh data/MSTAR
+LR_POLICY=scaled PARALLEL_JOBS=4 bash scripts/run_supervised_grid.sh data/MSTAR
+```
+
+实时监控（另一个终端或 agent）：
+
+```bash
+watch -n 20 'bash scripts/monitor_training.sh --once'
+# 或
+bash scripts/monitor_training.sh --watch 30
+```
+
+监控脚本会显示：
+- 当前 GPU 显存/利用率/功耗
+- 每个 run 的状态（DONE / RUN）、当前/最优 epoch、测试精度
+- 自动扫描 train.log 中的 OOM / CUDA / killed 等致命错误
+
+结果汇总自动生成在：
+
+```text
+runs_supervised_grid_fixed/summary/supervised_grid_summary.md   (固定 lr)
+runs_supervised_grid_scaled/summary/supervised_grid_summary.md  (线性缩放 lr)
+```
+
+这两张表 + FixMatch 的两张表，共同构成完整的 batch size / 学习率 / 监督 vs 半监督 四维对照实验。
+
+## 已完成实验结果
+
+当前目录已经完成基础对照、batch96 补充对照、FixMatch 网格和监督网格，共 38 个训练 run。所有结果均使用 MSTAR 10 类分类数据，训练集 2746 张、测试集 2425 张；10% 标签设置下按类别分层保留 268 张有标签样本，剩余 2478 张训练图像在纯监督实验中不使用，在 FixMatch 中作为无标签样本使用。
+
+### 基础三组对照
+
+`runs/` 使用 batch size 64、lr=0.001；FixMatch 使用 μ=2。
+
+| 实验 | 有标签样本 | 无标签/未使用样本 | batch size | μ | 学习率 | 最优测试精度 | 最优 epoch |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 全标签监督 | 2746 | 0 | 64 | - | 0.001 | 97.07% | 71 |
+| 10% 标签监督 | 268 | 2478 | 64 | - | 0.001 | 73.65% | 54 |
+| FixMatch 半监督 | 268 | 2478 | 64 | 2 | 0.001 | 82.60% | 68 |
+
+结论：标签从全量降到 10% 后，精度从 97.07% 降到 73.65%，下降 23.42 个百分点；FixMatch 在相同 268 个有标签样本基础上利用剩余无标签样本，提升到 82.60%，相对 10% 标签监督提高 8.95 个百分点，恢复了约 38.22% 的精度缺口。
+
+### batch96 补充对照
+
+`runs_batch96/` 使用 batch size 96、线性缩放 lr=0.0015；FixMatch 使用 μ=2。
+
+| 实验 | 有标签样本 | 无标签/未使用样本 | batch size | μ | 学习率 | 最优测试精度 | 最优 epoch |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 全标签监督 | 2746 | 0 | 96 | - | 0.0015 | 98.31% | 37 |
+| 10% 标签监督 | 268 | 2478 | 96 | - | 0.0015 | 72.78% | 61 |
+| FixMatch 半监督 | 268 | 2478 | 96 | 2 | 0.0015 | 85.57% | 52 |
+
+结论：batch96 下 FixMatch 比 10% 标签监督提高 12.79 个百分点，恢复约 50.10% 的精度缺口，说明半监督收益不是 batch64 单一设置下的偶然结果。
+
+### 监督学习 batch/lr 网格
+
+完整表格见：
+
+- `runs_supervised_grid_fixed/summary/supervised_grid_summary.md`
+- `runs_supervised_grid_scaled/summary/supervised_grid_summary.md`
+
+固定 lr=0.001 的最佳结果：
+
+| 监督设置 | 最佳 batch size | 学习率 | 最优测试精度 | 最优 epoch |
+| --- | ---: | ---: | ---: | ---: |
+| 全标签监督 | 32 | 0.001 | 98.23% | 63 |
+| 10% 标签监督 | 64 | 0.001 | 78.27% | 29 |
+
+线性缩放 lr 的最佳结果：
+
+| 监督设置 | 最佳 batch size | 学习率 | 最优测试精度 | 最优 epoch |
+| --- | ---: | ---: | ---: | ---: |
+| 全标签监督 | 32 | 0.0005 | 98.47% | 71 |
+| 10% 标签监督 | 96 | 0.0015 | 80.87% | 35 |
+
+结论：全标签监督在不同 batch/lr 下整体稳定，最高达到 98.47%；10% 标签监督对 batch 和学习率更敏感，固定 lr 下 batch64 最好，线性缩放 lr 下 batch96 最好，但仍显著低于全标签上限。
+
+### FixMatch batch/mu 网格
+
+完整表格见：
+
+- `runs_fixmatch_grid_fixed/summary/fixmatch_grid_summary.md`
+- `runs_fixmatch_grid_scaled/summary/fixmatch_grid_summary.md`
+
+固定 lr=0.001 的最佳结果：
+
+| batch size | μ | 无标签 batch size | 学习率 | 最优测试精度 | 最优 epoch |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 4 | 128 | 0.001 | 88.62% | 60 |
+
+线性缩放 lr 的最佳结果：
+
+| batch size | μ | 无标签 batch size | 学习率 | 最优测试精度 | 最优 epoch |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 2 | 64 | 0.0005 | 90.93% | 56 |
+
+结论：FixMatch 在两套学习率策略下的最优点都出现在 batch size 32，说明本任务中较小有标签 batch 更有利于半监督训练。μ 的最优值会随学习率策略变化：固定 lr 下 μ=4 最好，线性缩放 lr 下 μ=2 最好，说明无标签比例与学习率存在耦合。全量网格中的最高 FixMatch 精度为 90.93%，比同一 batch/lr 下的 10% 标签监督 71.96% 高 18.97 个百分点。
 
 ## 输出结果
 
