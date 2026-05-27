@@ -1,0 +1,11 @@
+{
+  "method": "fixmatch",
+  "label_ratio": 0.1,
+  "num_labeled": 268,
+  "num_unlabeled": 2478,
+  "threshold": 0.95,
+  "lambda_u": 1.0,
+  "best_test_acc": 0.7641237113402062,
+  "best_epoch": 30,
+  "time_seconds": 513.23
+}
