@@ -1,0 +1,14 @@
+{
+  "name": "SmallResNet",
+  "input": "1 x 128 x 128 grayscale SAR image",
+  "stages": [
+    "stem: 3x3 conv, 32 channels",
+    "layer1: 2 residual blocks, 32 channels",
+    "layer2: 2 residual blocks, 64 channels, stride 2",
+    "layer3: 2 residual blocks, 128 channels, stride 2",
+    "layer4: 2 residual blocks, 256 channels, stride 2",
+    "global average pooling + linear classifier"
+  ],
+  "output": "10 target-class logits",
+  "parameters": 2797034
+}

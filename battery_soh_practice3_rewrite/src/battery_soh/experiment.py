@@ -32,6 +32,24 @@ def run_experiment(
     patience: int,
     learning_rate: float,
 ) -> ExperimentResult:
+    """执行单个场景（划分方式）的完整训练与评估流程。
+
+    流程：设置随机种子 → Pearson 特征排序选 Top-K → 标准化+中位数填补 →
+    构建并训练 MLP（AdamW + SmoothL1Loss + 早停）→ 在测试集上反标准化预测 →
+    计算 MAE/RMSE/R2 → 组装 ExperimentResult。
+
+    Args:
+        scenario: 由 splits.py 构建的 Scenario 对象（含 train/val/test 划分）。
+        feature_cols: 全部候选特征列名。
+        top_k: 选择相关性最高的 top_k 个特征。
+        seed: 随机种子。
+        epochs: 最大训练轮数。
+        patience: 早停耐心值。
+        learning_rate: 学习率。
+
+    Returns:
+        ExperimentResult 包含指标、选中特征、PCC 表、预测结果、训练历史。
+    """
     set_seed(seed)
     pcc_table = pearson_ranking(scenario.train, feature_cols, target_col="soh_percent")
     selected = pcc_table.head(top_k)["feature"].tolist()
@@ -136,6 +154,18 @@ def run_experiment(
 
 
 def pearson_ranking(train_df: pd.DataFrame, feature_cols: list[str], target_col: str) -> pd.DataFrame:
+    """在训练集上计算各特征与目标的 Pearson 相关系数，并按绝对值降序排序。
+
+    常数列或全 NaN 列的 PCC 记为 0。结果自动添加 rank 列（1 为最高相关）。
+
+    Args:
+        train_df: 训练集 DataFrame。
+        feature_cols: 待评估的特征列名列表。
+        target_col: 目标列名（通常为 "soh_percent"）。
+
+    Returns:
+        含 feature、pcc、abs_pcc、rank 列的 DataFrame。
+    """
     y = train_df[target_col].astype(float)
     rows = []
     for col in feature_cols:
@@ -154,6 +184,7 @@ def pearson_ranking(train_df: pd.DataFrame, feature_cols: list[str], target_col:
 
 
 def aggregate_case_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
+    """按实验案例（A/B/C）聚合多个电池/迁移组合的 MAE/RMSE/R2 均值与标准差。"""
     return metrics_df.groupby("case", as_index=False).agg(
         MAE_mean=("MAE", "mean"),
         RMSE_mean=("RMSE", "mean"),
@@ -165,6 +196,7 @@ def aggregate_case_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def set_seed(seed: int) -> None:
+    """设置 Python、NumPy、PyTorch 的全局随机种子，并限制 PyTorch 单线程以保证可复现性。"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -177,6 +209,14 @@ def _prepare_arrays(
     test_df: pd.DataFrame,
     selected: list[str],
 ):
+    """对选定特征做中位数填补 + 标准化，对标签仅做标准化。
+
+    填补器与缩放器均仅在训练集上 fit，验证/测试集仅 transform，
+    严格避免数据泄露。
+
+    Returns:
+        x_train, x_val, x_test, y_train_scaled, y_val_scaled, y_test, y_scaler
+    """
     imputer = SimpleImputer(strategy="median")
     x_scaler = StandardScaler()
     y_scaler = StandardScaler()

@@ -14,6 +14,10 @@ plt.rcParams["axes.unicode_minus"] = False
 
 
 def plot_capacity_degradation(features: pd.DataFrame, out_path: Path) -> None:
+    """绘制清洗后四个电池的 SOH 随放电循环次数的衰退曲线。
+
+    横轴为 cycle_index，纵轴为 SOH(%)，同时标注 EOL 70% 阈值线。
+    """
     fig, ax = plt.subplots(figsize=(8, 5))
     for battery_id, group in features.groupby("battery_id", sort=True):
         group = group.sort_values("cycle_index")
@@ -30,6 +34,7 @@ def plot_capacity_degradation(features: pd.DataFrame, out_path: Path) -> None:
 
 
 def plot_capacity_spikes(raw_features: pd.DataFrame, spike_report: pd.DataFrame, out_path: Path) -> None:
+    """为四个电池分别绘制原始容量曲线 + 被剔除的局部尖峰位置（红色 x 标记）。"""
     batteries = sorted(raw_features["battery_id"].unique())
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), squeeze=False)
     axes = axes.reshape(-1)
@@ -59,6 +64,7 @@ def plot_capacity_spikes(raw_features: pd.DataFrame, spike_report: pd.DataFrame,
 
 
 def plot_split_schematic(out_path: Path) -> None:
+    """绘制三种实验划分协议的示意图（A 随机、B 时序、C 迁移），用于 PPT 说明。"""
     fig, ax = plt.subplots(figsize=(10.5, 5.8))
     ax.axis("off")
     rows = [
@@ -87,6 +93,7 @@ def plot_split_schematic(out_path: Path) -> None:
 
 
 def plot_pcc_heatmap(train_df: pd.DataFrame, pcc_table: pd.DataFrame, top_k: int, out_path: Path) -> list[str]:
+    """绘制 Top-K 特征与 SOH 的 Pearson 相关系数热力图，并返回实际选中的特征列表。"""
     top_features = pcc_table.sort_values("rank").head(top_k)["feature"].tolist()
     cols = top_features + ["soh_percent"]
     corr = train_df[cols].corr(method="pearson")
@@ -109,6 +116,7 @@ def plot_pcc_heatmap(train_df: pd.DataFrame, pcc_table: pd.DataFrame, top_k: int
 
 
 def plot_mlp_structure(top_k: int, out_path: Path) -> None:
+    """绘制 MLP 回归模型结构示意图，标注各层维度、激活函数与训练策略。"""
     fig, ax = plt.subplots(figsize=(8.8, 3.4))
     ax.axis("off")
     layers = [
@@ -131,6 +139,7 @@ def plot_mlp_structure(top_k: int, out_path: Path) -> None:
 
 
 def plot_metrics(metrics_df: pd.DataFrame, out_path: Path) -> None:
+    """绘制所有实验场景的 MAE/RMSE 柱状图 + R2 折线图（双 Y 轴），用于整体性能对比。"""
     data = metrics_df.reset_index(drop=True)
     labels = data.apply(
         lambda row: f"C-{row['source_battery']}->{row['target_battery']}"
@@ -160,6 +169,7 @@ def plot_metrics(metrics_df: pd.DataFrame, out_path: Path) -> None:
 
 
 def plot_group_predictions(predictions: pd.DataFrame, metrics_df: pd.DataFrame, case_name: str, out_path: Path) -> None:
+    """为指定案例（A/B/C）批量绘制多个子图的真实 vs 预测 SOH 曲线（网格布局）。"""
     sub_metrics = metrics_df[metrics_df["case"] == case_name]
     n_plots = len(sub_metrics)
     n_cols = min(4, max(1, n_plots))
@@ -190,6 +200,7 @@ def plot_group_predictions(predictions: pd.DataFrame, metrics_df: pd.DataFrame, 
 
 
 def plot_prediction_curve(predictions: pd.DataFrame, scenario: str, out_path: Path) -> None:
+    """为单个场景绘制详细的真实 SOH 与模型预测 SOH 随循环变化的曲线图。"""
     data = predictions[predictions["scenario"] == scenario].sort_values("cycle_index")
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(data["cycle_index"], data["soh_percent"], marker="o", markersize=3, linewidth=1, label="True SOH")
@@ -205,6 +216,7 @@ def plot_prediction_curve(predictions: pd.DataFrame, scenario: str, out_path: Pa
 
 
 def plot_loss_curve(history: pd.DataFrame, scenario: str, out_path: Path) -> None:
+    """绘制单个场景的训练集与验证集 SmoothL1 损失随 epoch 变化曲线，并标注最佳早停 epoch。"""
     data = history[history["scenario"] == scenario].sort_values("epoch")
     fig, ax = plt.subplots(figsize=(8, 4.2))
     ax.plot(data["epoch"], data["train_loss"], label="Train loss")

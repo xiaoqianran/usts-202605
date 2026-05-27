@@ -1,0 +1,18 @@
+{
+  "mode": "supervised",
+  "data_root": "data/MSTAR",
+  "out": "runs_supervised_grid_scaled/supervised_10percent_b128",
+  "model": "smallresnet",
+  "label_ratio": 0.1,
+  "img_size": 128,
+  "epochs": 80,
+  "batch_size": 128,
+  "mu": 4,
+  "lr": 0.002,
+  "weight_decay": 0.0001,
+  "threshold": 0.95,
+  "lambda_u": 1.0,
+  "num_workers": 4,
+  "seed": 42,
+  "device": "auto"
+}

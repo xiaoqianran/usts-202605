@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>实践二：MSTAR 深度半监督学习实验</title>
+  <style>
+    @page { size: A4; margin: 16mm 15mm; }
+    body {
+      font-family: "Microsoft YaHei", "SimSun", Arial, sans-serif;
+      color: #111;
+      font-size: 10.5pt;
+      line-height: 1.45;
+      max-width: 920px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 18pt; margin: 0 0 8px; text-align: center; }
+    h2 { font-size: 13pt; margin: 12px 0 6px; }
+    p { margin: 5px 0; text-align: justify; }
+    table { width: 100%; border-collapse: collapse; margin: 6px 0 8px; font-size: 9pt; }
+    th, td { border: 1px solid #777; padding: 4px 5px; text-align: center; }
+    th { background: #f1f3f5; }
+    figure { margin: 7px 0 10px; page-break-inside: avoid; }
+    figcaption { text-align: center; font-size: 9pt; margin-top: 3px; color: #333; }
+    img { display: block; max-width: 100%; margin: 0 auto; }
+    .wide img { max-height: 102mm; }
+    .short img { max-height: 62mm; }
+    .page-break { page-break-before: always; }
+  </style>
+</head>
+<body>
+  <h1>实践二：MSTAR 深度半监督学习实验</h1>
+
+  <h2>1. 基线 vs 有限标签</h2>
+  <p>本实验首先训练全标签监督模型作为基线，再将训练标签减少到 10% 后训练同一网络。MSTAR 训练集共 2746 张图像，10% 标签设置下按类别分层保留 268 张有标签样本，其余 2478 张在纯监督训练中不使用。</p>
+  <table>
+    <tr><th>实验</th><th>有标签样本</th><th>未使用无标签样本</th><th>batch size</th><th>学习率</th><th>最优测试精度</th><th>最优 epoch</th></tr>
+    <tr><td>全标签监督</td><td>2746</td><td>0</td><td>64</td><td>0.001</td><td>97.07%</td><td>71</td></tr>
+    <tr><td>10% 标签监督</td><td>268</td><td>2478</td><td>64</td><td>0.001</td><td>73.65%</td><td>54</td></tr>
+  </table>
+  <figure class="short"><img src="01_baseline_limited_accuracy_bar.png"><figcaption>图2-1 基线与有限标签精度对比</figcaption></figure>
+  <figure class="wide"><img src="02_baseline_limited_curves.png"><figcaption>图2-2 基线与有限标签训练/测试曲线</figcaption></figure>
+  <figure class="short"><img src="03_baseline_limited_confusion.png"><figcaption>图2-3 基线与有限标签混淆矩阵</figcaption></figure>
+  <p>结果显示，全标签监督最优测试精度为 97.07%，10% 标签监督下降到 73.65%，下降 23.42 个百分点。训练曲线和混淆矩阵说明，标签减少后模型更容易受少量标注样本限制，测试集泛化能力明显下降。</p>
+
+  <h2>2. 半监督方法</h2>
+  <p>本实验采用 FixMatch。其核心思想是：对无标签样本生成弱增强和强增强两个视图，先用弱增强视图得到预测概率；当最大类别概率不低于阈值 0.95 时，将该预测类别作为伪标签，再约束强增强视图输出同一类别。训练损失为 L = Lx + lambda_u Lu，其中 Lx 是有标签交叉熵损失，Lu 是无标签一致性损失，本实验 lambda_u=1.0。</p>
+  <figure class="short"><img src="04_fixmatch_flowchart.png"><figcaption>图2-4 FixMatch 实现框图</figcaption></figure>
+
+  <h2>3. 加入半监督后的结果对比</h2>
+  <p>FixMatch 与 10% 标签监督使用完全相同的 268 张有标签样本，额外把剩余 2478 张训练图像作为无标签样本。FixMatch 的有标签 batch size 为 64，μ=2，因此每个 step 同时使用 64 张有标签图像和 128 张无标签图像。</p>
+  <table>
+    <tr><th>实验</th><th>有标签样本</th><th>无标签/未使用样本</th><th>batch size</th><th>μ</th><th>学习率</th><th>最优测试精度</th><th>最优 epoch</th></tr>
+    <tr><td>全标签监督</td><td>2746</td><td>0</td><td>64</td><td>-</td><td>0.001</td><td>97.07%</td><td>71</td></tr>
+    <tr><td>10% 标签监督</td><td>268</td><td>2478</td><td>64</td><td>-</td><td>0.001</td><td>73.65%</td><td>54</td></tr>
+    <tr><td>FixMatch 半监督</td><td>268</td><td>2478</td><td>64</td><td>2</td><td>0.001</td><td>82.60%</td><td>68</td></tr>
+  </table>
+  <figure class="short"><img src="05_ssl_accuracy_recovery.png"><figcaption>图2-5 半监督精度恢复情况</figcaption></figure>
+  <figure class="wide"><img src="06_all_training_curves.png"><figcaption>图2-6 三组实验训练/测试曲线</figcaption></figure>
+  <figure class="short"><img src="07_all_confusion_matrices.png"><figcaption>图2-7 三组实验混淆矩阵</figcaption></figure>
+  <p>加入 FixMatch 后，最优测试精度从 10% 标签监督的 73.65% 提升到 82.60%，提高 8.95 个百分点，恢复了约 38.20% 的精度缺口。该结果说明无标签样本能够通过伪标签和一致性约束提供额外监督信号，从而缓解有限标签导致的性能下降。</p>
+</body>
+</html>

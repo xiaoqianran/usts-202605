@@ -10,6 +10,15 @@ from .config import BATTERIES
 
 @dataclass(frozen=True)
 class Scenario:
+    """实验场景数据类，封装单次 train/val/test 划分的完整上下文。
+
+    Attributes:
+        name: 场景唯一标识（如 "A_random_B0005_60_20_20"）。
+        case: 实验类别（"A" 随机 / "B" 时序 / "C" 迁移）。
+        source_battery: 训练数据来源电池（C 类场景中为源电池）。
+        target_battery: 测试目标电池（A/B 类与 source_battery 相同）。
+        train / val / test: 对应的 DataFrame 子集（已重置索引）。
+    """
     name: str
     case: str
     source_battery: str
@@ -20,6 +29,21 @@ class Scenario:
 
 
 def build_scenarios(features: pd.DataFrame, seed: int) -> list[Scenario]:
+    """构建实践三要求的三类全部实验场景。
+
+    A 类（随机）：每个电池独立做 60%/20%/20% 随机划分，共 4 个场景。
+    B 类（时序）：每个电池前 60% cycle 做开发集（再内部分 80/20 训练/验证），后 40% 做测试，共 4 个场景。
+    C 类（迁移）：遍历所有 source≠target 组合，source 全量 + target 前 10% 做训练/验证，target 后 90% 测试，共 4×3=12 个场景。
+
+    总计返回 4 + 4 + 12 = 20 个 Scenario 对象。
+
+    Args:
+        features: load_nasa_features 返回的完整特征表。
+        seed: A 类随机划分使用的随机种子。
+
+    Returns:
+        包含全部 20 个实验场景的列表。
+    """
     scenarios: list[Scenario] = []
 
     for battery_id in BATTERIES:
@@ -41,6 +65,10 @@ def build_scenarios(features: pd.DataFrame, seed: int) -> list[Scenario]:
 
 
 def summarize_splits(scenarios: list[Scenario]) -> pd.DataFrame:
+    """汇总所有场景各子集的样本量、涉及电池、cycle 范围、SOH 范围等统计信息。
+
+    用于生成数据划分质量检查表。
+    """
     rows = []
     for scenario in scenarios:
         for split_name, frame in [("train", scenario.train), ("validation", scenario.val), ("test", scenario.test)]:
@@ -63,6 +91,7 @@ def summarize_splits(scenarios: list[Scenario]) -> pd.DataFrame:
 
 
 def _random_single_battery(df: pd.DataFrame, battery_id: str, seed: int):
+    """对单个电池数据执行随机 60%/20%/20% 划分（先 40% 切分出开发+测试，再对开发集 50% 切分验证）。"""
     data = df[df["battery_id"] == battery_id].reset_index(drop=True)
     train, temp = train_test_split(data, test_size=0.40, shuffle=True, random_state=seed)
     val, test = train_test_split(temp, test_size=0.50, shuffle=True, random_state=seed)
@@ -70,6 +99,7 @@ def _random_single_battery(df: pd.DataFrame, battery_id: str, seed: int):
 
 
 def _chronological_single_battery(df: pd.DataFrame, battery_id: str):
+    """对单个电池按 cycle_index 顺序划分：前 60% 做开发集（内部再切 20% 作为 val），后 40% 做测试。"""
     data = df[df["battery_id"] == battery_id].sort_values("cycle_index").reset_index(drop=True)
     dev_count = int(len(data) * 0.60)
     dev = data.iloc[:dev_count].reset_index(drop=True)
@@ -81,6 +111,10 @@ def _chronological_single_battery(df: pd.DataFrame, battery_id: str):
 
 
 def _transfer_battery(df: pd.DataFrame, source_battery: str, target_battery: str):
+    """构建迁移学习场景划分：
+    - 源电池前 80% 做训练，源电池后 20% 做验证；
+    - 目标电池前 10% 加入训练（用于适应），目标电池后 90% 做测试。
+    """
     source = df[df["battery_id"] == source_battery].sort_values("cycle_index").reset_index(drop=True)
     target = df[df["battery_id"] == target_battery].sort_values("cycle_index").reset_index(drop=True)
 
