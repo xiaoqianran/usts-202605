@@ -15,14 +15,8 @@ _trapezoid = getattr(np, "trapezoid", np.trapz)
 
 def locate_data_dir(data_zip: Path, data_dir: Path) -> Path:
     """Return the folder that contains B0005.mat, extracting the zip when needed."""
-    for candidate in [
-        data_dir,
-        data_dir / "1. BatteryAgingARC-FY08Q4",
-        Path("../battery_soh_practice3_strict_code/data/extracted/1. BatteryAgingARC-FY08Q4"),
-        Path("../battery_soh_practice3/data/extracted/1. BatteryAgingARC-FY08Q4"),
-    ]:
-        if (candidate / "B0005.mat").exists():
-            return candidate
+    if (data_dir / "B0005.mat").exists():
+        return data_dir
 
     if not data_zip.exists():
         raise FileNotFoundError(
@@ -40,15 +34,42 @@ def locate_data_dir(data_zip: Path, data_dir: Path) -> Path:
     return matches[0].parent
 
 
-def load_nasa_features(data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_nasa_features(data_dir: Path, remove_capacity_spikes: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
     frames = []
     summaries = []
     for battery_id in BATTERIES:
-        frame, summary = _extract_discharge_features(data_dir / f"{battery_id}.mat")
+        frame, summary = _extract_discharge_features(
+            data_dir / f"{battery_id}.mat",
+            remove_capacity_spikes=remove_capacity_spikes,
+        )
         frames.append(frame)
         summaries.append(summary)
     features = pd.concat(frames, ignore_index=True)
     return features, pd.DataFrame(summaries)
+
+
+def capacity_spike_report(features: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for battery_id, group in features.groupby("battery_id", sort=True):
+        group = group.sort_values("cycle_index").reset_index(drop=True)
+        details = _capacity_spike_details(group["capacity_ah"].to_numpy(dtype=float))
+        for detail in details:
+            idx = int(detail["cycle_index"])
+            row = group.iloc[idx]
+            rows.append(
+                {
+                    "battery_id": battery_id,
+                    "cycle_index": int(row["cycle_index"]),
+                    "global_cycle_index": int(row["global_cycle_index"]),
+                    "capacity_ah": float(row["capacity_ah"]),
+                    "soh_percent": float(row["soh_percent"]),
+                    "local_median_capacity_ah": float(detail["local_median_capacity_ah"]),
+                    "delta_from_local_median_ah": float(detail["delta_from_local_median_ah"]),
+                    "threshold_ah": float(detail["threshold_ah"]),
+                    "window_radius": int(detail["window_radius"]),
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def describe_dataset(features: pd.DataFrame, cleaning: pd.DataFrame) -> pd.DataFrame:
@@ -99,7 +120,7 @@ def feature_reason(feature: str) -> str:
     return "该特征与 SOH 的 Pearson 相关性较高，因此进入候选输入集合。"
 
 
-def _extract_discharge_features(mat_path: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
+def _extract_discharge_features(mat_path: Path, remove_capacity_spikes: bool) -> tuple[pd.DataFrame, dict[str, Any]]:
     if not mat_path.exists():
         raise FileNotFoundError(f"Missing battery file: {mat_path}")
 
@@ -115,6 +136,7 @@ def _extract_discharge_features(mat_path: Path) -> tuple[pd.DataFrame, dict[str,
         "drop_short_or_length_mismatch": 0,
         "drop_nonfinite_or_bad_capacity": 0,
         "drop_bad_time": 0,
+        "drop_capacity_local_spike": 0,
     }
 
     discharge_index = 0
@@ -157,7 +179,16 @@ def _extract_discharge_features(mat_path: Path) -> tuple[pd.DataFrame, dict[str,
         discharge_index += 1
         summary["kept_discharge_cycles"] += 1
 
-    return pd.DataFrame(rows), summary
+    frame = pd.DataFrame(rows)
+    if len(frame) and remove_capacity_spikes:
+        spike_mask = _capacity_spike_mask(frame["capacity_ah"].to_numpy(dtype=float))
+        summary["drop_capacity_local_spike"] = int(spike_mask.sum())
+        if spike_mask.any():
+            frame = frame.loc[~spike_mask].reset_index(drop=True)
+            frame["cycle_index"] = np.arange(len(frame), dtype=int)
+            summary["kept_discharge_cycles"] = int(len(frame))
+
+    return frame, summary
 
 
 def _load_cycles(mat_path: Path, battery_id: str):
@@ -287,3 +318,40 @@ def _segment_slope(time_s: np.ndarray, values: np.ndarray) -> float:
         return float("nan")
     return float((values[-1] - values[0]) / (time_s[-1] - time_s[0]))
 
+
+def _capacity_spike_mask(capacity: np.ndarray, window_radius: int = 4) -> np.ndarray:
+    """Detect isolated capacity rebound spikes against neighbouring discharge cycles."""
+    details = _capacity_spike_details(capacity, window_radius=window_radius)
+    mask = np.zeros(len(capacity), dtype=bool)
+    for detail in details:
+        mask[int(detail["cycle_index"])] = True
+    return mask
+
+
+def _capacity_spike_details(capacity: np.ndarray, window_radius: int = 4) -> list[dict[str, float | int]]:
+    details: list[dict[str, float | int]] = []
+    if len(capacity) < window_radius * 2 + 1:
+        return details
+
+    for idx, value in enumerate(capacity):
+        start = max(0, idx - window_radius)
+        stop = min(len(capacity), idx + window_radius + 1)
+        neighbours = np.delete(capacity[start:stop], idx - start)
+        if len(neighbours) < 4:
+            continue
+
+        median = float(np.median(neighbours))
+        mad = float(np.median(np.abs(neighbours - median)))
+        robust_sigma = 1.4826 * mad
+        threshold = max(0.04, 3.0 * robust_sigma)
+        if value > median + threshold:
+            details.append(
+                {
+                    "cycle_index": int(idx),
+                    "local_median_capacity_ah": median,
+                    "delta_from_local_median_ah": float(value - median),
+                    "threshold_ah": threshold,
+                    "window_radius": int(window_radius),
+                }
+            )
+    return details

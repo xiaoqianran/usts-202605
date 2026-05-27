@@ -29,6 +29,35 @@ def plot_capacity_degradation(features: pd.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_capacity_spikes(raw_features: pd.DataFrame, spike_report: pd.DataFrame, out_path: Path) -> None:
+    batteries = sorted(raw_features["battery_id"].unique())
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8), squeeze=False)
+    axes = axes.reshape(-1)
+    for ax, battery_id in zip(axes, batteries):
+        group = raw_features[raw_features["battery_id"] == battery_id].sort_values("cycle_index")
+        spikes = spike_report[spike_report["battery_id"] == battery_id]
+        ax.plot(group["cycle_index"], group["capacity_ah"], marker="o", markersize=2.5, linewidth=1, label="Raw capacity")
+        if len(spikes):
+            ax.scatter(
+                spikes["cycle_index"],
+                spikes["capacity_ah"],
+                s=48,
+                marker="x",
+                linewidths=1.8,
+                color="#d62728",
+                label="Removed local spike",
+            )
+        ax.axhline(1.4, linestyle="--", linewidth=1, color="#666666", label="EOL 1.4Ah")
+        ax.set_title(f"{battery_id}: local capacity spike check")
+        ax.set_xlabel("Discharge cycle index")
+        ax.set_ylabel("Capacity (Ah)")
+        ax.grid(True, linewidth=0.3)
+    axes[0].legend()
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
 def plot_split_schematic(out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(10.5, 5.8))
     ax.axis("off")
@@ -103,9 +132,15 @@ def plot_mlp_structure(top_k: int, out_path: Path) -> None:
 
 def plot_metrics(metrics_df: pd.DataFrame, out_path: Path) -> None:
     data = metrics_df.reset_index(drop=True)
-    labels = data["case"] + "-" + data["target_battery"].str.replace("B00", "", regex=False)
+    labels = data.apply(
+        lambda row: f"C-{row['source_battery']}->{row['target_battery']}"
+        if row["case"] == "C"
+        else f"{row['case']}-{row['target_battery']}",
+        axis=1,
+    )
     x = np.arange(len(data))
-    fig, ax1 = plt.subplots(figsize=(12, 5))
+    fig_width = max(12, len(data) * 0.75)
+    fig, ax1 = plt.subplots(figsize=(fig_width, 5.5))
     ax1.bar(x - 0.2, data["MAE"], width=0.4, label="MAE")
     ax1.bar(x + 0.2, data["RMSE"], width=0.4, label="RMSE")
     ax1.set_ylabel("Error / SOH percentage points")
@@ -118,7 +153,7 @@ def plot_metrics(metrics_df: pd.DataFrame, out_path: Path) -> None:
     ax2.set_ylabel("R2")
     ax2.set_ylim(min(0.0, float(data["R2"].min()) - 0.1), 1.05)
     ax2.legend(loc="upper right")
-    ax1.set_title("MAE/RMSE/R2 comparison across 12 runs")
+    ax1.set_title(f"MAE/RMSE/R2 comparison across {len(data)} runs")
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
@@ -126,17 +161,27 @@ def plot_metrics(metrics_df: pd.DataFrame, out_path: Path) -> None:
 
 def plot_group_predictions(predictions: pd.DataFrame, metrics_df: pd.DataFrame, case_name: str, out_path: Path) -> None:
     sub_metrics = metrics_df[metrics_df["case"] == case_name]
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    n_plots = len(sub_metrics)
+    n_cols = min(4, max(1, n_plots))
+    n_rows = int(np.ceil(n_plots / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.2 * n_cols, 3.4 * n_rows), squeeze=False)
     axes = axes.reshape(-1)
     for ax, (_, row) in zip(axes, sub_metrics.iterrows()):
         scenario = row["scenario"]
         data = predictions[predictions["scenario"] == scenario].sort_values("cycle_index")
         ax.plot(data["cycle_index"], data["soh_percent"], marker="o", markersize=2, linewidth=1, label="True")
         ax.plot(data["cycle_index"], data["pred_soh_percent"], marker="x", markersize=2, linewidth=1, label="Pred")
-        ax.set_title(f"{row['target_battery']} | MAE={row['MAE']:.3f}, R2={row['R2']:.3f}")
+        title = (
+            f"{row['source_battery']}->{row['target_battery']}"
+            if case_name == "C"
+            else str(row["target_battery"])
+        )
+        ax.set_title(f"{title} | MAE={row['MAE']:.3f}, R2={row['R2']:.3f}")
         ax.set_xlabel("Cycle")
         ax.set_ylabel("SOH (%)")
         ax.grid(True, linewidth=0.3)
+    for ax in axes[n_plots:]:
+        ax.axis("off")
     axes[0].legend()
     fig.suptitle(f"Case {case_name}: true vs predicted SOH")
     fig.tight_layout()
@@ -176,4 +221,3 @@ def plot_loss_curve(history: pd.DataFrame, scenario: str, out_path: Path) -> Non
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
-

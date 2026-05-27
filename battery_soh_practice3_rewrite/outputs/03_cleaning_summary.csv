@@ -1,5 +1,5 @@
-﻿battery_id,raw_total_cycles,raw_discharge_cycles,kept_discharge_cycles,drop_parse_error,drop_short_or_length_mismatch,drop_nonfinite_or_bad_capacity,drop_bad_time
-B0005,616,168,168,0,0,0,0
-B0006,616,168,168,0,0,0,0
-B0007,616,168,168,0,0,0,0
-B0018,319,132,132,0,0,0,0
+﻿battery_id,raw_total_cycles,raw_discharge_cycles,kept_discharge_cycles,drop_parse_error,drop_short_or_length_mismatch,drop_nonfinite_or_bad_capacity,drop_bad_time,drop_capacity_local_spike
+B0005,616,168,166,0,0,0,0,2
+B0006,616,168,165,0,0,0,0,3
+B0007,616,168,167,0,0,0,0,1
+B0018,319,132,131,0,0,0,0,1

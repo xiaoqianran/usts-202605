@@ -5,10 +5,6 @@
 运行方式二选一：
 
 1. 将 `BatteryAgingARC.zip` 放在 `data/BatteryAgingARC.zip`。
-2. 将四个 `.mat` 文件放在 `data/extracted/` 或 `data/extracted/1. BatteryAgingARC-FY08Q4/`。
+2. 或将四个 `.mat` 文件直接放在 `data/extracted/`。
 
-当前仓库已有旧实验目录时，`run_pipeline.py` 也会自动尝试复用：
-
-- `../battery_soh_practice3_strict_code/data/extracted/1. BatteryAgingARC-FY08Q4`
-- `../battery_soh_practice3/data/extracted/1. BatteryAgingARC-FY08Q4`
-
+运行 `run_pipeline.py` 时，如果 `data/extracted/` 里还没有 `.mat` 文件，程序会自动解压 `data/BatteryAgingARC.zip` 到该目录。

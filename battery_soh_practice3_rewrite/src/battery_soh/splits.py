@@ -7,13 +7,6 @@ from sklearn.model_selection import train_test_split
 
 from .config import BATTERIES
 
-TRANSFER_SOURCE = {
-    "B0005": "B0007",
-    "B0006": "B0007",
-    "B0007": "B0005",
-    "B0018": "B0005",
-}
-
 
 @dataclass(frozen=True)
 class Scenario:
@@ -37,10 +30,12 @@ def build_scenarios(features: pd.DataFrame, seed: int) -> list[Scenario]:
         train, val, test = _chronological_single_battery(features, battery_id)
         scenarios.append(Scenario(f"B_chrono_{battery_id}_first60_last40", "B", battery_id, battery_id, train, val, test))
 
-    for target in BATTERIES:
-        source = TRANSFER_SOURCE[target]
-        train, val, test = _transfer_battery(features, source, target)
-        scenarios.append(Scenario(f"C_transfer_{source}_to_{target}_target10", "C", source, target, train, val, test))
+    for source in BATTERIES:
+        for target in BATTERIES:
+            if source == target:
+                continue
+            train, val, test = _transfer_battery(features, source, target)
+            scenarios.append(Scenario(f"C_transfer_{source}_to_{target}_target10", "C", source, target, train, val, test))
 
     return scenarios
 
@@ -99,4 +94,3 @@ def _transfer_battery(df: pd.DataFrame, source_battery: str, target_battery: str
 
     train = pd.concat([source_train, target_adapt], ignore_index=True)
     return train, source_val, target_test
-
